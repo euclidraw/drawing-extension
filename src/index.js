@@ -1,5 +1,5 @@
 import metadata from '../extension.json' with { type: 'json' };
-import { FreeDrawTool } from './draw-tool.js';
+import { FreeDrawTool, SELECT_IDLE_STATE, getMachineStateId, transitionMachineToIdle } from './draw-tool.js';
 import {
   BRUSH_TYPES,
   DASH_TYPES,
@@ -78,11 +78,15 @@ const COMMAND_META = Object.freeze({
   },
 });
 
+const strokeSelectionContribution = createStrokeSelectionContribution();
+
 export const freehandStrokeAspect = Object.freeze({
   id: STROKE_ASPECT_ID,
   label: '자유 드로잉',
   summary: metadata.summary,
   layout: true,
+  paintOverflow: 32,
+  selection: strokeSelectionContribution,
   paintBounds: derived =>
     derived?.inkBounds ?? {
       x: finiteOr(derived?.x, 0),
@@ -446,69 +450,124 @@ export default {
     const toolInput = safeGetService(context, 'canvas.tool-input');
     const activeSurface = safeGetService(context, 'canvas.active-tool-surface');
 
+    const resolveToolEndpoints = () => {
+      const active = activeSurface?.get?.() ?? null;
+      const rawSurface = active?.surface ?? safeGetService(context, 'canvas.surface') ?? null;
+      const surfaceElement = rawSurface?.element ?? rawSurface ?? null;
+      const hudElement = active?.hud ?? rawSurface?.hud ?? null;
+      const host = active?.host ?? safeGetService(context, 'canvas.interaction') ?? null;
+      const selection = active?.selection ?? getSelectionService(context) ?? null;
+      return {
+        surface: surfaceElement,
+        hud: hudElement,
+        host,
+        selection,
+      };
+    };
+
     let currentTool = null;
+    let boundEndpoints = null;
     let disposeSurfaceTool = () => {};
 
-    const mountSurfaceTool = nextSurface => {
+    const syncSurfaceTool = explicitTarget => {
+      const next =
+        explicitTarget && typeof explicitTarget === 'object' && ('surface' in explicitTarget || 'selection' in explicitTarget)
+          ? {
+              surface: explicitTarget.surface?.element ?? explicitTarget.surface ?? null,
+              hud: explicitTarget.hud ?? explicitTarget.surface?.hud ?? null,
+              host: explicitTarget.host ?? safeGetService(context, 'canvas.interaction') ?? null,
+              selection: explicitTarget.selection ?? getSelectionService(context) ?? null,
+            }
+          : resolveToolEndpoints();
+
+      if (
+        currentTool
+        && boundEndpoints
+        && boundEndpoints.surface === next.surface
+        && boundEndpoints.hud === next.hud
+        && boundEndpoints.host === next.host
+        && boundEndpoints.selection === next.selection
+      ) {
+        return currentTool;
+      }
+
+      const wasActive =
+        Boolean(currentTool?.active)
+        || getMachineStateId(boundEndpoints?.selection?.stateMachine) === FREEHAND_TOOL_STATE;
+
       disposeSurfaceTool();
       disposeSurfaceTool = () => {};
       currentTool = null;
+      boundEndpoints = null;
 
-      if (!nextSurface || !nextSurface.surface || !nextSurface.hud) return;
+      if (!next.surface || !next.hud) return null;
 
       const tool = new FreeDrawTool({
         world: context.world,
         creation,
-        surface: nextSurface.surface,
-        hud: nextSurface.hud,
-        host: nextSurface.host,
-        selection: nextSurface.selection,
+        surface: next.surface,
+        hud: next.hud,
+        host: next.host,
+        selection: next.selection,
         getPreference: (key, fallback) => readPreference(context, key, fallback),
         setPreference: (key, value) => writePreference(context, key, value),
       });
 
       const unmountEvents = tool.mount();
       const unmountState =
-        nextSurface.selection?.stateMachine?.mountChildState?.('root.select', tool.createStateNode()) ?? (() => {});
+        next.selection?.stateMachine?.mountChildState?.('root.select', tool.createStateNode()) ?? (() => {});
       const offFrames = frames?.subscribe?.(() => tool.flushFrame()) ?? (() => {});
 
       currentTool = tool;
+      boundEndpoints = next;
       disposeSurfaceTool = () => {
-        if (nextSurface.selection?.stateMachine?.getState?.() === FREEHAND_TOOL_STATE) {
-          nextSurface.selection.stateMachine.transition('root.select.idle');
+        if (getMachineStateId(next.selection?.stateMachine) === FREEHAND_TOOL_STATE) {
+          transitionMachineToIdle(next.selection.stateMachine);
         }
         offFrames();
         unmountState();
         unmountEvents();
         tool.dispose();
         currentTool = null;
+        boundEndpoints = null;
       };
+
+      if (wasActive) {
+        tool.enter();
+      }
+      return tool;
     };
 
+    syncSurfaceTool();
     if (typeof activeSurface?.subscribe === 'function') {
-      const offSub = activeSurface.subscribe(mountSurfaceTool);
+      const offSub = activeSurface.subscribe(next => syncSurfaceTool(next));
       disposers.push(() => {
         offSub();
         disposeSurfaceTool();
       });
-    } else if (activeSurface?.get?.()) {
-      mountSurfaceTool(activeSurface.get());
+    } else {
       disposers.push(() => disposeSurfaceTool());
     }
 
     if (typeof toolInput?.register === 'function') {
-      disposers.push(
-        toolInput.register({
-          onEscape: () => {
-            const machine = (getActiveSurface(context)?.selection ?? selectionService)?.stateMachine;
-            if (machine?.getState?.() !== FREEHAND_TOOL_STATE) return false;
-            return machine.dispatch({ type: 'escape' });
-          },
-          onBlur: () => {
-            currentTool?.onWindowBlur?.();
-          },
-        }),
-      );
+      const handler = {
+        handleKeyDown: event => currentTool?.onKeyDown?.(event) ?? false,
+        onEscape: () => {
+          const machine = (getActiveSurface(context)?.selection ?? selectionService)?.stateMachine;
+          if (getMachineStateId(machine) !== FREEHAND_TOOL_STATE) return false;
+          return machine.dispatch({ type: 'escape' });
+        },
+        onBlur: () => {
+          currentTool?.onWindowBlur?.();
+        },
+      };
+      const offToolInput =
+        toolInput.register.length >= 2
+          ? toolInput.register(EXTENSION_ID, handler)
+          : toolInput.register(EXTENSION_ID, handler) ?? toolInput.register(handler);
+      if (typeof offToolInput === 'function') {
+        disposers.push(offToolInput);
+      }
     }
 
     const insertStroke = (options = {}) => {
@@ -595,21 +654,37 @@ export default {
       return createdId;
     };
 
-    const toggleDrawTool = (options = {}) => {
+    const toggleDrawTool = () => {
       ensureActive();
-      const surface = getActiveSurface(context);
-      const machine = (surface?.selection ?? selectionService)?.stateMachine;
-      if (currentTool && machine && typeof machine.getState === 'function' && typeof machine.transition === 'function') {
-        if (machine.getState() === FREEHAND_TOOL_STATE) {
-          machine.transition('root.select.idle');
-          return 'root.select.idle';
+      syncSurfaceTool();
+      const endpoints = resolveToolEndpoints();
+      const machine = endpoints.selection?.stateMachine;
+      const isCurrentlyActive =
+        Boolean(currentTool?.active)
+        || getMachineStateId(machine) === FREEHAND_TOOL_STATE;
+
+      if (isCurrentlyActive) {
+        if (currentTool) {
+          return currentTool.exit();
         }
-        surface?.selection?.clear?.();
-        machine.transition(FREEHAND_TOOL_STATE);
-        return FREEHAND_TOOL_STATE;
+        return transitionMachineToIdle(machine);
       }
-      // Headless / non-HSM fallback: create a default stroke immediately
-      return insertStroke({ ...options, caller: `${EXTENSION_ID}:draw-tool` });
+
+      if (context?.commands?.get?.('canvas:select-tool')) {
+        context.commands.execute('canvas:select-tool');
+        syncSurfaceTool();
+      }
+
+      if (currentTool) {
+        return currentTool.enter();
+      }
+
+      if (machine && typeof machine.transition === 'function') {
+        endpoints.selection?.select?.(null);
+        endpoints.selection?.clear?.();
+        machine.transition(FREEHAND_TOOL_STATE);
+      }
+      return FREEHAND_TOOL_STATE;
     };
 
     const simplifySelectedStrokes = (options = {}) => {

@@ -66,9 +66,16 @@ test('activation registers commands without mutating the document, and disposal 
   assert.equal(createdRequest, null, 'activation must not create or mutate entities');
   assert.equal(registeredCommands.size, manifest.capabilities.commands.length);
 
+  // Clicking the toolbar draw-tool command enters FREEHAND_TOOL_STATE and NEVER creates a pre-drawn stroke
   const drawToolCmd = registeredCommands.get('drawing.freehand:draw-tool');
   assert.ok(drawToolCmd);
-  assert.equal(drawToolCmd.run(), 'stroke-1');
+  assert.equal(drawToolCmd.run(), FREEHAND_TOOL_STATE);
+  assert.equal(createdRequest, null, 'draw-tool command must only toggle drawing mode, never spawn a preset entity');
+
+  // Explicit insert-stroke command creates a stroke entity when requested
+  const insertStrokeCmd = registeredCommands.get('drawing.freehand:insert-stroke');
+  assert.ok(insertStrokeCmd);
+  assert.equal(insertStrokeCmd.run(), 'stroke-1');
   assert.ok(createdRequest);
   assert.equal(Object.hasOwn(createdRequest.aspects, 'core.transform'), false);
   assert.equal(Object.hasOwn(createdRequest.aspects, 'core.bounds'), false);
@@ -217,7 +224,8 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
   const winListeners = new Map();
   const mountedHsmNodes = new Map();
   let frameCallback = null;
-  let currentState = 'root.select.idle';
+  let currentState = 'root.select.core.select-suite:idle';
+  mountedHsmNodes.set('root.select.core.select-suite:idle', { id: 'root.select.core.select-suite:idle' });
   const createdEntities = [];
 
   const mockDoc = {
@@ -272,29 +280,35 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
   const mockHud = {
     ownerDocument: mockDoc,
     children: [],
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 800, height: 600 }),
     append(node) {
       this.children.push(node);
     },
   };
 
   const stateMachine = {
-    getState: () => currentState,
+    get stateId() {
+      return currentState;
+    },
     mountChildState(_parent, node) {
       mountedHsmNodes.set(node.id, node);
       return () => mountedHsmNodes.delete(node.id);
     },
     transition(target) {
+      if (!mountedHsmNodes.has(target)) return false;
       const prev = mountedHsmNodes.get(currentState);
       prev?.onExit?.();
       currentState = target;
       const next = mountedHsmNodes.get(target);
       next?.onEnter?.();
+      return true;
     },
     dispatch(event) {
       return mountedHsmNodes.get(currentState)?.onEvent?.(event) ?? false;
     },
   };
 
+  const surfaceListenersSet = new Set();
   const { api, dispose } = plugin.activate({
     world: { getCanonical: () => undefined },
     commands: { register: () => () => {} },
@@ -304,6 +318,8 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
           return {
             create(req) {
               createdEntities.push(req);
+              // Simulate Alid's runtime.ts createEntity() which calls setMode('select')
+              stateMachine.transition('root.select.core.select-suite:idle');
               return `stroke-${createdEntities.length}`;
             },
           };
@@ -321,10 +337,20 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
         if (name === 'canvas.active-tool-surface') {
           return {
             get: () => ({
-              surface: mockSurface,
-              hud: mockHud,
+              surface: {
+                element: mockSurface,
+                hud: mockHud,
+              },
               host: {
-                getCamera: () => ({ x: 0, y: 0, zoom: 1 }),
+                screenToWorld(clientX, clientY, out) {
+                  out.x = clientX - 10;
+                  out.y = clientY - 20;
+                },
+                worldToScreen(wx, wy, out) {
+                  out.x = wx + 10;
+                  out.y = wy + 20;
+                },
+                getZoom: () => 1,
                 requestRender() {},
               },
               selection: {
@@ -334,6 +360,11 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
                 select() {},
               },
             }),
+            // Alid's subscribe() does NOT invoke the listener on registration
+            subscribe(listener) {
+              surfaceListenersSet.add(listener);
+              return () => surfaceListenersSet.delete(listener);
+            },
           };
         }
         return undefined;
@@ -341,10 +372,12 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
     },
   });
 
-  // 1. Toggle into Freehand Draw Tool
+  // 1. Toggle into Freehand Draw Tool (must mount on activation even when subscribe is present)
+  assert.ok(api.getActiveTool(), 'FreeDrawTool must be mounted on activation');
   assert.equal(api.toggleDrawTool(), FREEHAND_TOOL_STATE);
   assert.equal(currentState, FREEHAND_TOOL_STATE);
   assert.equal(mockSurface.dataset.activeTool, 'drawing.freehand');
+  assert.equal(createdEntities.length, 0, 'Toggling into draw tool must never create an entity');
 
   // 2. Start drawing with pen pressure & coalesced events + Shift straight-line snap
   surfaceListeners.get('pointerdown')({
@@ -415,7 +448,12 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
     });
     winListeners.get('keydown')({ key: 'Escape', isComposing: false, keyCode: 27 });
     assert.equal(api.getActiveTool().drawing, false);
+    assert.equal(currentState, FREEHAND_TOOL_STATE, 'Escape during active stroke aborts draft but stays in draw tool');
     assert.equal(createdEntities.length, 1, 'Canceled stroke must not commit to world');
+
+    // Second Escape (or toggleDrawTool) exits draw tool back to SelectSuite idle
+    assert.equal(api.toggleDrawTool(), 'root.select.core.select-suite:idle');
+    assert.equal(currentState, 'root.select.core.select-suite:idle');
     break this_wait;
   }
 

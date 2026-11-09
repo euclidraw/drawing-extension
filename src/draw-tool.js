@@ -18,6 +18,35 @@ const UI_SELECTOR =
   'input,textarea,select,button,[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"],[data-canvas-ui],[data-text-editor]';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const ANGLE_SNAP_RAD = Math.PI / 12; // 15° increments
+export const SELECT_IDLE_STATE = 'root.select.core.select-suite:idle';
+const LEGACY_SELECT_IDLE_STATE = 'root.select.idle';
+
+export function getMachineStateId(stateMachine) {
+  if (!stateMachine) return undefined;
+  if (typeof stateMachine.stateId === 'string') return stateMachine.stateId;
+  if (typeof stateMachine.getState === 'function') return stateMachine.getState();
+  return undefined;
+}
+
+export function transitionMachineToIdle(stateMachine) {
+  if (!stateMachine || typeof stateMachine.transition !== 'function') {
+    return SELECT_IDLE_STATE;
+  }
+  try {
+    const ok = stateMachine.transition(SELECT_IDLE_STATE);
+    if (ok !== false && getMachineStateId(stateMachine) === SELECT_IDLE_STATE) {
+      return SELECT_IDLE_STATE;
+    }
+  } catch {
+    // Fallback for minimal test state machines
+  }
+  try {
+    stateMachine.transition(LEGACY_SELECT_IDLE_STATE);
+  } catch {
+    // Ignore transition errors when parent state is unmounted
+  }
+  return getMachineStateId(stateMachine) ?? SELECT_IDLE_STATE;
+}
 
 /**
  * Interactive tldraw-style Freehand Drawing Tool with:
@@ -51,6 +80,10 @@ export class FreeDrawTool {
     this.rawSeg = new Uint8Array(MAX_STROKE_POINTS);
     this.rawCount = 0;
 
+    // Pre-allocated mutable points for 0-GC host coordinate projection
+    this.tmpPoint = { x: 0, y: 0 };
+    this.tmpOrigin = { x: 0, y: 0 };
+
     // Cached surface rect updated on pointerdown / resize
     this.rectLeft = 0;
     this.rectTop = 0;
@@ -65,8 +98,16 @@ export class FreeDrawTool {
     this.ensureHudElements();
   }
 
+  get surfaceElement() {
+    return this.options?.surface?.element ?? this.options?.surface ?? null;
+  }
+
+  get hudElement() {
+    return this.options?.hud ?? this.options?.surface?.hud ?? null;
+  }
+
   ensureHudElements() {
-    const hud = this.options?.hud;
+    const hud = this.hudElement;
     if (!hud || typeof hud.ownerDocument?.createElementNS !== 'function') return;
     if (this.hudSvg) return;
 
@@ -114,7 +155,7 @@ export class FreeDrawTool {
   }
 
   updateSurfaceRect() {
-    const rect = this.options?.surface?.getBoundingClientRect?.();
+    const rect = this.surfaceElement?.getBoundingClientRect?.();
     if (rect) {
       this.rectLeft = finiteOr(rect.left, 0);
       this.rectTop = finiteOr(rect.top, 0);
@@ -128,6 +169,44 @@ export class FreeDrawTool {
       y: finiteOr(cam?.y, 0),
       zoom: Math.max(0.01, finiteOr(cam?.zoom, 1)),
     };
+  }
+
+  getZoom() {
+    const host = this.options?.host;
+    if (typeof host?.getZoom === 'function') {
+      return Math.max(0.01, finiteOr(host.getZoom(), 1));
+    }
+    return this.getCamera().zoom;
+  }
+
+  screenToWorldPoint(clientX, clientY, out) {
+    const host = this.options?.host;
+    if (typeof host?.screenToWorld === 'function') {
+      host.screenToWorld(clientX, clientY, out);
+      return out;
+    }
+    const cam = this.getCamera();
+    out.x = (clientX - this.rectLeft - cam.x) / cam.zoom;
+    out.y = (clientY - this.rectTop - cam.y) / cam.zoom;
+    return out;
+  }
+
+  updateHudTransform() {
+    if (!this.hudWorldGroup) return;
+    const host = this.options?.host;
+    const zoom = this.getZoom();
+    if (typeof host?.worldToScreen === 'function') {
+      const hudRect = this.hudElement?.getBoundingClientRect?.();
+      const left = finiteOr(hudRect?.left, 0);
+      const top = finiteOr(hudRect?.top, 0);
+      host.worldToScreen(0, 0, this.tmpOrigin);
+      const tx = round2(finiteOr(this.tmpOrigin.x, 0) - left);
+      const ty = round2(finiteOr(this.tmpOrigin.y, 0) - top);
+      this.hudWorldGroup.setAttribute('transform', `translate(${tx} ${ty}) scale(${round2(zoom)})`);
+      return;
+    }
+    const cam = this.getCamera();
+    this.hudWorldGroup.setAttribute('transform', `translate(${round2(cam.x)},${round2(cam.y)}) scale(${round2(cam.zoom)})`);
   }
 
   resolveActiveBrushProps() {
@@ -165,23 +244,49 @@ export class FreeDrawTool {
     return base;
   }
 
+  enter() {
+    this.options?.selection?.select?.(null);
+    this.options?.selection?.clear?.();
+    const machine = this.options?.selection?.stateMachine;
+    if (machine && typeof machine.transition === 'function') {
+      machine.transition(FREEHAND_TOOL_STATE);
+    } else {
+      this.active = true;
+    }
+    return FREEHAND_TOOL_STATE;
+  }
+
+  exit() {
+    this.abortDraft();
+    return transitionMachineToIdle(this.options?.selection?.stateMachine);
+  }
+
+  toggle() {
+    const machine = this.options?.selection?.stateMachine;
+    if (this.active || getMachineStateId(machine) === FREEHAND_TOOL_STATE) {
+      return this.exit();
+    }
+    return this.enter();
+  }
+
   createStateNode() {
     return {
       id: FREEHAND_TOOL_STATE,
       onEnter: () => {
         this.active = true;
         this.resetDraft();
-        const surface = this.options?.surface;
+        const surface = this.surfaceElement;
         if (surface) {
-          surface.dataset.activeTool = EXTENSION_ID;
+          if (surface.dataset) surface.dataset.activeTool = EXTENSION_ID;
           if (surface.style) surface.style.cursor = 'crosshair';
         }
         this.syncHudVisibility();
+        this.options?.host?.requestRender?.();
       },
       onExit: () => {
         this.abortDraft();
         this.active = false;
-        const surface = this.options?.surface;
+        const surface = this.surfaceElement;
         if (surface) {
           if (surface.dataset?.activeTool === EXTENSION_ID) {
             delete surface.dataset.activeTool;
@@ -191,6 +296,7 @@ export class FreeDrawTool {
           }
         }
         this.syncHudVisibility();
+        this.options?.host?.requestRender?.();
       },
       onEvent: event => {
         if (!event || typeof event.type !== 'string') return false;
@@ -199,7 +305,7 @@ export class FreeDrawTool {
             this.abortDraft();
             return true;
           }
-          this.options?.selection?.stateMachine?.transition?.('root.select.idle');
+          this.exit();
           return true;
         }
         if (event.type === 'enter' || event.type === 'complete') {
@@ -216,12 +322,14 @@ export class FreeDrawTool {
 
   onPointerDown = event => {
     if (!this.active || event.button !== 0) return;
+    if (this.options?.host?.isSelectionEnabled?.() === false) return;
+    if (this.options?.host?.isPanGesture?.(event)) return;
     if (typeof event.target?.closest === 'function' && event.target.closest(UI_SELECTOR)) return;
 
     this.updateSurfaceRect();
-    const cam = this.getCamera();
-    const wx = (event.clientX - this.rectLeft - cam.x) / cam.zoom;
-    const wy = (event.clientY - this.rectTop - cam.y) / cam.zoom;
+    const pt = this.screenToWorldPoint(event.clientX, event.clientY, this.tmpPoint);
+    const wx = pt.x;
+    const wy = pt.y;
     if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
 
     const isPenEvent =
@@ -242,12 +350,13 @@ export class FreeDrawTool {
     this.rawCount = 1;
 
     try {
-      this.options?.surface?.setPointerCapture?.(event.pointerId);
+      this.surfaceElement?.setPointerCapture?.(event.pointerId);
     } catch {
       // Ignore capture errors on synthetic pointer events
     }
 
     event.preventDefault?.();
+    event.stopImmediatePropagation?.();
     this.previewDirty = true;
     this.syncHudVisibility();
     this.flushFrame();
@@ -264,8 +373,11 @@ export class FreeDrawTool {
       return;
     }
 
-    const cam = this.getCamera();
-    const minDist = Math.max(0.28, 1.2 / cam.zoom);
+    event.preventDefault?.();
+    event.stopImmediatePropagation?.();
+
+    const zoom = this.getZoom();
+    const minDist = Math.max(0.28, 1.2 / zoom);
     const minDistSq = minDist * minDist;
     const shiftHeld = Boolean(event.shiftKey);
     const snapAngle = Boolean(event.ctrlKey || event.metaKey);
@@ -275,8 +387,9 @@ export class FreeDrawTool {
 
     for (let i = 0; i < count; i++) {
       const sample = coalesced && coalesced.length > 0 ? coalesced[i] : event;
-      let wx = (sample.clientX - this.rectLeft - cam.x) / cam.zoom;
-      let wy = (sample.clientY - this.rectTop - cam.y) / cam.zoom;
+      const pt = this.screenToWorldPoint(sample.clientX, sample.clientY, this.tmpPoint);
+      let wx = pt.x;
+      let wy = pt.y;
       if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
 
       const isPenSample =
@@ -352,7 +465,7 @@ export class FreeDrawTool {
     // Check loop auto-close when Alt is held or closed fill is configured
     if (this.rawCount >= 6) {
       const styleWidth = finiteOr(this.activeStyleProps?.strokeWidth, 6);
-      const closeThreshold = Math.max(10 / cam.zoom, styleWidth * 1.6);
+      const closeThreshold = Math.max(10 / zoom, styleWidth * 1.6);
       const endX = this.rawX[this.rawCount - 1];
       const endY = this.rawY[this.rawCount - 1];
       const distToStart = Math.hypot(endX - this.rawX[0], endY - this.rawY[0]);
@@ -371,6 +484,8 @@ export class FreeDrawTool {
     if (this.pointerId !== null && event.pointerId !== undefined && event.pointerId !== this.pointerId) {
       return;
     }
+    event.preventDefault?.();
+    event.stopImmediatePropagation?.();
     this.releaseCapture(event.pointerId);
     this.finishDraft();
   };
@@ -395,9 +510,9 @@ export class FreeDrawTool {
   };
 
   onKeyDown = event => {
-    if (!this.active) return;
-    if (this.isImeActive(event)) return;
-    if (typeof event.target?.closest === 'function' && event.target.closest(UI_SELECTOR)) return;
+    if (!this.active) return false;
+    if (this.isImeActive(event)) return false;
+    if (typeof event.target?.closest === 'function' && event.target.closest(UI_SELECTOR)) return false;
 
     if (event.key === 'Escape') {
       event.preventDefault?.();
@@ -405,16 +520,16 @@ export class FreeDrawTool {
       if (this.drawing) {
         this.abortDraft();
       } else {
-        this.options?.selection?.stateMachine?.transition?.('root.select.idle');
+        this.exit();
       }
-      return;
+      return true;
     }
 
     if (event.key === 'Enter' && this.drawing) {
       event.preventDefault?.();
       event.stopPropagation?.();
       this.finishDraft();
-      return;
+      return true;
     }
 
     if ((event.key === '[' || event.key === ']') && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -431,7 +546,10 @@ export class FreeDrawTool {
         this.previewDirty = true;
         this.options?.host?.requestRender?.();
       }
+      return true;
     }
+
+    return false;
   };
 
   onCompositionStart = () => {
@@ -446,8 +564,9 @@ export class FreeDrawTool {
   releaseCapture(pointerId) {
     if (pointerId === null || pointerId === undefined) return;
     try {
-      if (this.options?.surface?.hasPointerCapture?.(pointerId)) {
-        this.options.surface.releasePointerCapture(pointerId);
+      const surface = this.surfaceElement;
+      if (surface?.hasPointerCapture?.(pointerId)) {
+        surface.releasePointerCapture(pointerId);
       }
     } catch {
       // Ignore synthetic pointer capture release errors
@@ -495,9 +614,9 @@ export class FreeDrawTool {
     const isClosed = Boolean(this.willAutoClose || this.activeStyleProps?.isClosed);
     const baseProps = this.activeStyleProps ?? this.resolveActiveBrushProps();
 
-    const cam = this.getCamera();
+    const zoom = this.getZoom();
     const prefTol = finiteOr(Number(this.options?.getPreference?.('simplifyTolerance', 0.65)), 0.65);
-    const worldTolerance = prefTol > 0 ? Math.max(0.15, prefTol / cam.zoom) : 0;
+    const worldTolerance = prefTol > 0 ? Math.max(0.15, prefTol / zoom) : 0;
 
     const normalized = normalizeStrokeGeometry(rawPoints, {
       simplifyTolerance: worldTolerance,
@@ -534,9 +653,13 @@ export class FreeDrawTool {
     this.lastCreatedId = createdId;
 
     const keepActive = this.options?.getPreference?.('keepToolActive', true) !== false;
-    if (!keepActive) {
+    if (keepActive) {
+      // Host createEntity() transitions back to select idle and selects the new entity.
+      // Re-enter FREEHAND_TOOL_STATE and clear selection so users can draw continuous strokes.
+      this.enter();
+    } else {
       this.options?.selection?.select?.(createdId);
-      this.options?.selection?.stateMachine?.transition?.('root.select.idle');
+      this.exit();
     }
 
     this.options?.host?.requestRender?.();
@@ -554,8 +677,8 @@ export class FreeDrawTool {
   flushFrame = () => {
     if (!this.active || !this.drawing || !this.hudSvg) return;
 
-    const cam = this.getCamera();
-    this.hudWorldGroup.setAttribute('transform', `translate(${round2(cam.x)},${round2(cam.y)}) scale(${round2(cam.zoom)})`);
+    this.updateHudTransform();
+    const zoom = this.getZoom();
 
     if (!this.previewDirty) return;
     this.previewDirty = false;
@@ -636,7 +759,7 @@ export class FreeDrawTool {
     if (this.willAutoClose && this.hudCloseRing) {
       this.hudCloseRing.setAttribute('cx', String(round2(this.rawX[0])));
       this.hudCloseRing.setAttribute('cy', String(round2(this.rawY[0])));
-      this.hudCloseRing.setAttribute('r', String(round2(Math.max(8 / cam.zoom, style.effectiveWidth))));
+      this.hudCloseRing.setAttribute('r', String(round2(Math.max(8 / zoom, style.effectiveWidth))));
       this.hudCloseRing.style.display = 'block';
     } else if (this.hudCloseRing) {
       this.hudCloseRing.style.display = 'none';
@@ -644,28 +767,28 @@ export class FreeDrawTool {
   };
 
   mount() {
-    const surface = this.options?.surface;
+    const surface = this.surfaceElement;
     if (!surface || typeof surface.addEventListener !== 'function') {
       return () => {};
     }
     const win = surface.ownerDocument?.defaultView ?? (typeof window !== 'undefined' ? window : null);
 
-    surface.addEventListener('pointerdown', this.onPointerDown);
-    surface.addEventListener('pointermove', this.onPointerMove);
-    surface.addEventListener('pointerup', this.onPointerUp);
-    surface.addEventListener('pointercancel', this.onPointerCancel);
-    surface.addEventListener('lostpointercapture', this.onLostPointerCapture);
+    surface.addEventListener('pointerdown', this.onPointerDown, { capture: true });
+    surface.addEventListener('pointermove', this.onPointerMove, { capture: true });
+    surface.addEventListener('pointerup', this.onPointerUp, { capture: true });
+    surface.addEventListener('pointercancel', this.onPointerCancel, { capture: true });
+    surface.addEventListener('lostpointercapture', this.onLostPointerCapture, { capture: true });
     win?.addEventListener?.('keydown', this.onKeyDown, true);
     win?.addEventListener?.('compositionstart', this.onCompositionStart, true);
     win?.addEventListener?.('compositionend', this.onCompositionEnd, true);
     win?.addEventListener?.('blur', this.onWindowBlur);
 
     return () => {
-      surface.removeEventListener('pointerdown', this.onPointerDown);
-      surface.removeEventListener('pointermove', this.onPointerMove);
-      surface.removeEventListener('pointerup', this.onPointerUp);
-      surface.removeEventListener('pointercancel', this.onPointerCancel);
-      surface.removeEventListener('lostpointercapture', this.onLostPointerCapture);
+      surface.removeEventListener('pointerdown', this.onPointerDown, { capture: true });
+      surface.removeEventListener('pointermove', this.onPointerMove, { capture: true });
+      surface.removeEventListener('pointerup', this.onPointerUp, { capture: true });
+      surface.removeEventListener('pointercancel', this.onPointerCancel, { capture: true });
+      surface.removeEventListener('lostpointercapture', this.onLostPointerCapture, { capture: true });
       win?.removeEventListener?.('keydown', this.onKeyDown, true);
       win?.removeEventListener?.('compositionstart', this.onCompositionStart, true);
       win?.removeEventListener?.('compositionend', this.onCompositionEnd, true);

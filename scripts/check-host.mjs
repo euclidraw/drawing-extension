@@ -247,7 +247,11 @@ try {
   }
 
   // Verify analytical selection contribution against real world view
+  const worldSelection = world.getSelectionContribution(createdId);
+  assert.ok(worldSelection, 'world.getSelectionContribution returns stroke selection contribution');
   const firstPt = world.getComputed(createdId, `computed.${plugin.aspects[0].id}`).sampledPoints[0];
+  assert.ok(worldSelection.hitTest(createdId, world, firstPt.x, firstPt.y, 1) <= 8);
+  assert.equal(worldSelection.hitTest(createdId, world, -9999, -9999, 1), Infinity);
   assert.ok(registeredContribution.hitTest(createdId, world, firstPt.x, firstPt.y, 1) <= 8);
   assert.equal(registeredContribution.hitTest(createdId, world, -9999, -9999, 1), Infinity);
 

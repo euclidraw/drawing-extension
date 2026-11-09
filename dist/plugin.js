@@ -1226,6 +1226,23 @@ function deriveStrokeGeometry(props, entityId, view) {
 var UI_SELECTOR = "input,textarea,select,button,[contenteditable=\"\"],[contenteditable=\"true\"],[contenteditable=\"plaintext-only\"],[data-canvas-ui],[data-text-editor]";
 var SVG_NS = "http://www.w3.org/2000/svg";
 var ANGLE_SNAP_RAD = Math.PI / 12;
+var SELECT_IDLE_STATE = "root.select.core.select-suite:idle";
+var LEGACY_SELECT_IDLE_STATE = "root.select.idle";
+function getMachineStateId(stateMachine) {
+	if (!stateMachine) return void 0;
+	if (typeof stateMachine.stateId === "string") return stateMachine.stateId;
+	if (typeof stateMachine.getState === "function") return stateMachine.getState();
+}
+function transitionMachineToIdle(stateMachine) {
+	if (!stateMachine || typeof stateMachine.transition !== "function") return SELECT_IDLE_STATE;
+	try {
+		if (stateMachine.transition("root.select.core.select-suite:idle") !== false && getMachineStateId(stateMachine) === "root.select.core.select-suite:idle") return SELECT_IDLE_STATE;
+	} catch {}
+	try {
+		stateMachine.transition(LEGACY_SELECT_IDLE_STATE);
+	} catch {}
+	return getMachineStateId(stateMachine) ?? "root.select.core.select-suite:idle";
+}
 /**
 * Interactive tldraw-style Freehand Drawing Tool with:
 * - Pre-allocated Float64Array / Uint8Array point buffers (0-GC hot path during pointermove)
@@ -1255,6 +1272,14 @@ var FreeDrawTool = class {
 		this.rawZ = new Float64Array(MAX_STROKE_POINTS);
 		this.rawSeg = new Uint8Array(MAX_STROKE_POINTS);
 		this.rawCount = 0;
+		this.tmpPoint = {
+			x: 0,
+			y: 0
+		};
+		this.tmpOrigin = {
+			x: 0,
+			y: 0
+		};
 		this.rectLeft = 0;
 		this.rectTop = 0;
 		this.hudSvg = null;
@@ -1264,8 +1289,14 @@ var FreeDrawTool = class {
 		this.hudCloseRing = null;
 		this.ensureHudElements();
 	}
+	get surfaceElement() {
+		return this.options?.surface?.element ?? this.options?.surface ?? null;
+	}
+	get hudElement() {
+		return this.options?.hud ?? this.options?.surface?.hud ?? null;
+	}
 	ensureHudElements() {
-		const hud = this.options?.hud;
+		const hud = this.hudElement;
 		if (!hud || typeof hud.ownerDocument?.createElementNS !== "function") return;
 		if (this.hudSvg) return;
 		const doc = hud.ownerDocument;
@@ -1299,7 +1330,7 @@ var FreeDrawTool = class {
 		return this.composing || Boolean(event?.isComposing) || event?.keyCode === 229 || event?.key === "Process" || now - this.compositionEndedAt < 16;
 	}
 	updateSurfaceRect() {
-		const rect = this.options?.surface?.getBoundingClientRect?.();
+		const rect = this.surfaceElement?.getBoundingClientRect?.();
 		if (rect) {
 			this.rectLeft = finiteOr(rect.left, 0);
 			this.rectTop = finiteOr(rect.top, 0);
@@ -1312,6 +1343,39 @@ var FreeDrawTool = class {
 			y: finiteOr(cam?.y, 0),
 			zoom: Math.max(.01, finiteOr(cam?.zoom, 1))
 		};
+	}
+	getZoom() {
+		const host = this.options?.host;
+		if (typeof host?.getZoom === "function") return Math.max(.01, finiteOr(host.getZoom(), 1));
+		return this.getCamera().zoom;
+	}
+	screenToWorldPoint(clientX, clientY, out) {
+		const host = this.options?.host;
+		if (typeof host?.screenToWorld === "function") {
+			host.screenToWorld(clientX, clientY, out);
+			return out;
+		}
+		const cam = this.getCamera();
+		out.x = (clientX - this.rectLeft - cam.x) / cam.zoom;
+		out.y = (clientY - this.rectTop - cam.y) / cam.zoom;
+		return out;
+	}
+	updateHudTransform() {
+		if (!this.hudWorldGroup) return;
+		const host = this.options?.host;
+		const zoom = this.getZoom();
+		if (typeof host?.worldToScreen === "function") {
+			const hudRect = this.hudElement?.getBoundingClientRect?.();
+			const left = finiteOr(hudRect?.left, 0);
+			const top = finiteOr(hudRect?.top, 0);
+			host.worldToScreen(0, 0, this.tmpOrigin);
+			const tx = round2(finiteOr(this.tmpOrigin.x, 0) - left);
+			const ty = round2(finiteOr(this.tmpOrigin.y, 0) - top);
+			this.hudWorldGroup.setAttribute("transform", `translate(${tx} ${ty}) scale(${round2(zoom)})`);
+			return;
+		}
+		const cam = this.getCamera();
+		this.hudWorldGroup.setAttribute("transform", `translate(${round2(cam.x)},${round2(cam.y)}) scale(${round2(cam.zoom)})`);
 	}
 	resolveActiveBrushProps() {
 		const getPref = this.options?.getPreference;
@@ -1343,28 +1407,47 @@ var FreeDrawTool = class {
 		}
 		return base;
 	}
+	enter() {
+		this.options?.selection?.select?.(null);
+		this.options?.selection?.clear?.();
+		const machine = this.options?.selection?.stateMachine;
+		if (machine && typeof machine.transition === "function") machine.transition(FREEHAND_TOOL_STATE);
+		else this.active = true;
+		return FREEHAND_TOOL_STATE;
+	}
+	exit() {
+		this.abortDraft();
+		return transitionMachineToIdle(this.options?.selection?.stateMachine);
+	}
+	toggle() {
+		const machine = this.options?.selection?.stateMachine;
+		if (this.active || getMachineStateId(machine) === FREEHAND_TOOL_STATE) return this.exit();
+		return this.enter();
+	}
 	createStateNode() {
 		return {
 			id: FREEHAND_TOOL_STATE,
 			onEnter: () => {
 				this.active = true;
 				this.resetDraft();
-				const surface = this.options?.surface;
+				const surface = this.surfaceElement;
 				if (surface) {
-					surface.dataset.activeTool = EXTENSION_ID;
+					if (surface.dataset) surface.dataset.activeTool = EXTENSION_ID;
 					if (surface.style) surface.style.cursor = "crosshair";
 				}
 				this.syncHudVisibility();
+				this.options?.host?.requestRender?.();
 			},
 			onExit: () => {
 				this.abortDraft();
 				this.active = false;
-				const surface = this.options?.surface;
+				const surface = this.surfaceElement;
 				if (surface) {
 					if (surface.dataset?.activeTool === EXTENSION_ID) delete surface.dataset.activeTool;
 					if (surface.style?.cursor === "crosshair") surface.style.cursor = "";
 				}
 				this.syncHudVisibility();
+				this.options?.host?.requestRender?.();
 			},
 			onEvent: (event) => {
 				if (!event || typeof event.type !== "string") return false;
@@ -1373,7 +1456,7 @@ var FreeDrawTool = class {
 						this.abortDraft();
 						return true;
 					}
-					this.options?.selection?.stateMachine?.transition?.("root.select.idle");
+					this.exit();
 					return true;
 				}
 				if (event.type === "enter" || event.type === "complete") {
@@ -1389,11 +1472,13 @@ var FreeDrawTool = class {
 	}
 	onPointerDown = (event) => {
 		if (!this.active || event.button !== 0) return;
+		if (this.options?.host?.isSelectionEnabled?.() === false) return;
+		if (this.options?.host?.isPanGesture?.(event)) return;
 		if (typeof event.target?.closest === "function" && event.target.closest(UI_SELECTOR)) return;
 		this.updateSurfaceRect();
-		const cam = this.getCamera();
-		const wx = (event.clientX - this.rectLeft - cam.x) / cam.zoom;
-		const wy = (event.clientY - this.rectTop - cam.y) / cam.zoom;
+		const pt = this.screenToWorldPoint(event.clientX, event.clientY, this.tmpPoint);
+		const wx = pt.x;
+		const wy = pt.y;
 		if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
 		const isPenEvent = event.pointerType === "pen" && typeof event.pressure === "number" && event.pressure > 0;
 		const pressure = isPenEvent ? clamp(event.pressure, .02, 1) : .5;
@@ -1409,9 +1494,10 @@ var FreeDrawTool = class {
 		this.rawSeg[0] = 0;
 		this.rawCount = 1;
 		try {
-			this.options?.surface?.setPointerCapture?.(event.pointerId);
+			this.surfaceElement?.setPointerCapture?.(event.pointerId);
 		} catch {}
 		event.preventDefault?.();
+		event.stopImmediatePropagation?.();
 		this.previewDirty = true;
 		this.syncHudVisibility();
 		this.flushFrame();
@@ -1424,8 +1510,10 @@ var FreeDrawTool = class {
 	onPointerMove = (event) => {
 		if (!this.active || !this.drawing) return;
 		if (this.pointerId !== null && event.pointerId !== void 0 && event.pointerId !== this.pointerId) return;
-		const cam = this.getCamera();
-		const minDist = Math.max(.28, 1.2 / cam.zoom);
+		event.preventDefault?.();
+		event.stopImmediatePropagation?.();
+		const zoom = this.getZoom();
+		const minDist = Math.max(.28, 1.2 / zoom);
 		const minDistSq = minDist * minDist;
 		const shiftHeld = Boolean(event.shiftKey);
 		const snapAngle = Boolean(event.ctrlKey || event.metaKey);
@@ -1433,8 +1521,9 @@ var FreeDrawTool = class {
 		const count = coalesced && coalesced.length > 0 ? coalesced.length : 1;
 		for (let i = 0; i < count; i++) {
 			const sample = coalesced && coalesced.length > 0 ? coalesced[i] : event;
-			let wx = (sample.clientX - this.rectLeft - cam.x) / cam.zoom;
-			let wy = (sample.clientY - this.rectTop - cam.y) / cam.zoom;
+			const pt = this.screenToWorldPoint(sample.clientX, sample.clientY, this.tmpPoint);
+			let wx = pt.x;
+			let wy = pt.y;
 			if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
 			const isPenSample = (sample.pointerType === "pen" || this.hasRealPressure) && typeof sample.pressure === "number" && sample.pressure > 0;
 			if (isPenSample) this.hasRealPressure = true;
@@ -1493,7 +1582,7 @@ var FreeDrawTool = class {
 		}
 		if (this.rawCount >= 6) {
 			const styleWidth = finiteOr(this.activeStyleProps?.strokeWidth, 6);
-			const closeThreshold = Math.max(10 / cam.zoom, styleWidth * 1.6);
+			const closeThreshold = Math.max(10 / zoom, styleWidth * 1.6);
 			const endX = this.rawX[this.rawCount - 1];
 			const endY = this.rawY[this.rawCount - 1];
 			const distToStart = Math.hypot(endX - this.rawX[0], endY - this.rawY[0]);
@@ -1504,6 +1593,8 @@ var FreeDrawTool = class {
 	onPointerUp = (event) => {
 		if (!this.active || !this.drawing) return;
 		if (this.pointerId !== null && event.pointerId !== void 0 && event.pointerId !== this.pointerId) return;
+		event.preventDefault?.();
+		event.stopImmediatePropagation?.();
 		this.releaseCapture(event.pointerId);
 		this.finishDraft();
 	};
@@ -1520,21 +1611,21 @@ var FreeDrawTool = class {
 		if (this.drawing) this.abortDraft();
 	};
 	onKeyDown = (event) => {
-		if (!this.active) return;
-		if (this.isImeActive(event)) return;
-		if (typeof event.target?.closest === "function" && event.target.closest(UI_SELECTOR)) return;
+		if (!this.active) return false;
+		if (this.isImeActive(event)) return false;
+		if (typeof event.target?.closest === "function" && event.target.closest(UI_SELECTOR)) return false;
 		if (event.key === "Escape") {
 			event.preventDefault?.();
 			event.stopPropagation?.();
 			if (this.drawing) this.abortDraft();
-			else this.options?.selection?.stateMachine?.transition?.("root.select.idle");
-			return;
+			else this.exit();
+			return true;
 		}
 		if (event.key === "Enter" && this.drawing) {
 			event.preventDefault?.();
 			event.stopPropagation?.();
 			this.finishDraft();
-			return;
+			return true;
 		}
 		if ((event.key === "[" || event.key === "]") && !event.ctrlKey && !event.metaKey && !event.altKey) {
 			const delta = event.key === "]" ? 2 : -2;
@@ -1548,7 +1639,9 @@ var FreeDrawTool = class {
 				this.previewDirty = true;
 				this.options?.host?.requestRender?.();
 			}
+			return true;
 		}
+		return false;
 	};
 	onCompositionStart = () => {
 		this.composing = true;
@@ -1560,7 +1653,8 @@ var FreeDrawTool = class {
 	releaseCapture(pointerId) {
 		if (pointerId === null || pointerId === void 0) return;
 		try {
-			if (this.options?.surface?.hasPointerCapture?.(pointerId)) this.options.surface.releasePointerCapture(pointerId);
+			const surface = this.surfaceElement;
+			if (surface?.hasPointerCapture?.(pointerId)) surface.releasePointerCapture(pointerId);
 		} catch {}
 	}
 	resetDraft() {
@@ -1597,9 +1691,9 @@ var FreeDrawTool = class {
 		const isPen = this.hasRealPressure;
 		const isClosed = Boolean(this.willAutoClose || this.activeStyleProps?.isClosed);
 		const baseProps = this.activeStyleProps ?? this.resolveActiveBrushProps();
-		const cam = this.getCamera();
+		const zoom = this.getZoom();
 		const prefTol = finiteOr(Number(this.options?.getPreference?.("simplifyTolerance", .65)), .65);
-		const normalized = normalizeStrokeGeometry(rawPoints, { simplifyTolerance: prefTol > 0 ? Math.max(.15, prefTol / cam.zoom) : 0 });
+		const normalized = normalizeStrokeGeometry(rawPoints, { simplifyTolerance: prefTol > 0 ? Math.max(.15, prefTol / zoom) : 0 });
 		const strokeProps = {
 			...STROKE_DEFAULTS,
 			...baseProps,
@@ -1623,9 +1717,10 @@ var FreeDrawTool = class {
 			aspects: { [STROKE_ASPECT_ID]: strokeProps }
 		});
 		this.lastCreatedId = createdId;
-		if (!(this.options?.getPreference?.("keepToolActive", true) !== false)) {
+		if (this.options?.getPreference?.("keepToolActive", true) !== false) this.enter();
+		else {
 			this.options?.selection?.select?.(createdId);
-			this.options?.selection?.stateMachine?.transition?.("root.select.idle");
+			this.exit();
 		}
 		this.options?.host?.requestRender?.();
 		return createdId;
@@ -1639,8 +1734,8 @@ var FreeDrawTool = class {
 	*/
 	flushFrame = () => {
 		if (!this.active || !this.drawing || !this.hudSvg) return;
-		const cam = this.getCamera();
-		this.hudWorldGroup.setAttribute("transform", `translate(${round2(cam.x)},${round2(cam.y)}) scale(${round2(cam.zoom)})`);
+		this.updateHudTransform();
+		const zoom = this.getZoom();
 		if (!this.previewDirty) return;
 		this.previewDirty = false;
 		const n = this.rawCount;
@@ -1705,29 +1800,29 @@ var FreeDrawTool = class {
 		if (this.willAutoClose && this.hudCloseRing) {
 			this.hudCloseRing.setAttribute("cx", String(round2(this.rawX[0])));
 			this.hudCloseRing.setAttribute("cy", String(round2(this.rawY[0])));
-			this.hudCloseRing.setAttribute("r", String(round2(Math.max(8 / cam.zoom, style.effectiveWidth))));
+			this.hudCloseRing.setAttribute("r", String(round2(Math.max(8 / zoom, style.effectiveWidth))));
 			this.hudCloseRing.style.display = "block";
 		} else if (this.hudCloseRing) this.hudCloseRing.style.display = "none";
 	};
 	mount() {
-		const surface = this.options?.surface;
+		const surface = this.surfaceElement;
 		if (!surface || typeof surface.addEventListener !== "function") return () => {};
 		const win = surface.ownerDocument?.defaultView ?? (typeof window !== "undefined" ? window : null);
-		surface.addEventListener("pointerdown", this.onPointerDown);
-		surface.addEventListener("pointermove", this.onPointerMove);
-		surface.addEventListener("pointerup", this.onPointerUp);
-		surface.addEventListener("pointercancel", this.onPointerCancel);
-		surface.addEventListener("lostpointercapture", this.onLostPointerCapture);
+		surface.addEventListener("pointerdown", this.onPointerDown, { capture: true });
+		surface.addEventListener("pointermove", this.onPointerMove, { capture: true });
+		surface.addEventListener("pointerup", this.onPointerUp, { capture: true });
+		surface.addEventListener("pointercancel", this.onPointerCancel, { capture: true });
+		surface.addEventListener("lostpointercapture", this.onLostPointerCapture, { capture: true });
 		win?.addEventListener?.("keydown", this.onKeyDown, true);
 		win?.addEventListener?.("compositionstart", this.onCompositionStart, true);
 		win?.addEventListener?.("compositionend", this.onCompositionEnd, true);
 		win?.addEventListener?.("blur", this.onWindowBlur);
 		return () => {
-			surface.removeEventListener("pointerdown", this.onPointerDown);
-			surface.removeEventListener("pointermove", this.onPointerMove);
-			surface.removeEventListener("pointerup", this.onPointerUp);
-			surface.removeEventListener("pointercancel", this.onPointerCancel);
-			surface.removeEventListener("lostpointercapture", this.onLostPointerCapture);
+			surface.removeEventListener("pointerdown", this.onPointerDown, { capture: true });
+			surface.removeEventListener("pointermove", this.onPointerMove, { capture: true });
+			surface.removeEventListener("pointerup", this.onPointerUp, { capture: true });
+			surface.removeEventListener("pointercancel", this.onPointerCancel, { capture: true });
+			surface.removeEventListener("lostpointercapture", this.onLostPointerCapture, { capture: true });
 			win?.removeEventListener?.("keydown", this.onKeyDown, true);
 			win?.removeEventListener?.("compositionstart", this.onCompositionStart, true);
 			win?.removeEventListener?.("compositionend", this.onCompositionEnd, true);
@@ -2389,11 +2484,14 @@ var COMMAND_META = Object.freeze({
 		summary: "선택된 스트로크의 브러시 종류(펜/모노라인/마커/형광펜)를 전환합니다."
 	}
 });
+var strokeSelectionContribution = createStrokeSelectionContribution();
 var freehandStrokeAspect = Object.freeze({
 	id: STROKE_ASPECT_ID,
 	label: "자유 드로잉",
 	summary: extension_default.summary,
 	layout: true,
+	paintOverflow: 32,
+	selection: strokeSelectionContribution,
 	paintBounds: (derived) => derived?.inkBounds ?? {
 		x: finiteOr(derived?.x, 0),
 		y: finiteOr(derived?.y, 0),
@@ -2839,56 +2937,83 @@ var src_default = {
 		const frames = safeGetService(context, "canvas.frames");
 		const toolInput = safeGetService(context, "canvas.tool-input");
 		const activeSurface = safeGetService(context, "canvas.active-tool-surface");
+		const resolveToolEndpoints = () => {
+			const active = activeSurface?.get?.() ?? null;
+			const rawSurface = active?.surface ?? safeGetService(context, "canvas.surface") ?? null;
+			return {
+				surface: rawSurface?.element ?? rawSurface ?? null,
+				hud: active?.hud ?? rawSurface?.hud ?? null,
+				host: active?.host ?? safeGetService(context, "canvas.interaction") ?? null,
+				selection: active?.selection ?? getSelectionService(context) ?? null
+			};
+		};
 		let currentTool = null;
+		let boundEndpoints = null;
 		let disposeSurfaceTool = () => {};
-		const mountSurfaceTool = (nextSurface) => {
+		const syncSurfaceTool = (explicitTarget) => {
+			const next = explicitTarget && typeof explicitTarget === "object" && ("surface" in explicitTarget || "selection" in explicitTarget) ? {
+				surface: explicitTarget.surface?.element ?? explicitTarget.surface ?? null,
+				hud: explicitTarget.hud ?? explicitTarget.surface?.hud ?? null,
+				host: explicitTarget.host ?? safeGetService(context, "canvas.interaction") ?? null,
+				selection: explicitTarget.selection ?? getSelectionService(context) ?? null
+			} : resolveToolEndpoints();
+			if (currentTool && boundEndpoints && boundEndpoints.surface === next.surface && boundEndpoints.hud === next.hud && boundEndpoints.host === next.host && boundEndpoints.selection === next.selection) return currentTool;
+			const wasActive = Boolean(currentTool?.active) || getMachineStateId(boundEndpoints?.selection?.stateMachine) === FREEHAND_TOOL_STATE;
 			disposeSurfaceTool();
 			disposeSurfaceTool = () => {};
 			currentTool = null;
-			if (!nextSurface || !nextSurface.surface || !nextSurface.hud) return;
+			boundEndpoints = null;
+			if (!next.surface || !next.hud) return null;
 			const tool = new FreeDrawTool({
 				world: context.world,
 				creation,
-				surface: nextSurface.surface,
-				hud: nextSurface.hud,
-				host: nextSurface.host,
-				selection: nextSurface.selection,
+				surface: next.surface,
+				hud: next.hud,
+				host: next.host,
+				selection: next.selection,
 				getPreference: (key, fallback) => readPreference(context, key, fallback),
 				setPreference: (key, value) => writePreference(context, key, value)
 			});
 			const unmountEvents = tool.mount();
-			const unmountState = nextSurface.selection?.stateMachine?.mountChildState?.("root.select", tool.createStateNode()) ?? (() => {});
+			const unmountState = next.selection?.stateMachine?.mountChildState?.("root.select", tool.createStateNode()) ?? (() => {});
 			const offFrames = frames?.subscribe?.(() => tool.flushFrame()) ?? (() => {});
 			currentTool = tool;
+			boundEndpoints = next;
 			disposeSurfaceTool = () => {
-				if (nextSurface.selection?.stateMachine?.getState?.() === FREEHAND_TOOL_STATE) nextSurface.selection.stateMachine.transition("root.select.idle");
+				if (getMachineStateId(next.selection?.stateMachine) === FREEHAND_TOOL_STATE) transitionMachineToIdle(next.selection.stateMachine);
 				offFrames();
 				unmountState();
 				unmountEvents();
 				tool.dispose();
 				currentTool = null;
+				boundEndpoints = null;
 			};
+			if (wasActive) tool.enter();
+			return tool;
 		};
+		syncSurfaceTool();
 		if (typeof activeSurface?.subscribe === "function") {
-			const offSub = activeSurface.subscribe(mountSurfaceTool);
+			const offSub = activeSurface.subscribe((next) => syncSurfaceTool(next));
 			disposers.push(() => {
 				offSub();
 				disposeSurfaceTool();
 			});
-		} else if (activeSurface?.get?.()) {
-			mountSurfaceTool(activeSurface.get());
-			disposers.push(() => disposeSurfaceTool());
+		} else disposers.push(() => disposeSurfaceTool());
+		if (typeof toolInput?.register === "function") {
+			const handler = {
+				handleKeyDown: (event) => currentTool?.onKeyDown?.(event) ?? false,
+				onEscape: () => {
+					const machine = (getActiveSurface(context)?.selection ?? selectionService)?.stateMachine;
+					if (getMachineStateId(machine) !== FREEHAND_TOOL_STATE) return false;
+					return machine.dispatch({ type: "escape" });
+				},
+				onBlur: () => {
+					currentTool?.onWindowBlur?.();
+				}
+			};
+			const offToolInput = toolInput.register.length >= 2 ? toolInput.register(EXTENSION_ID, handler) : toolInput.register(EXTENSION_ID, handler) ?? toolInput.register(handler);
+			if (typeof offToolInput === "function") disposers.push(offToolInput);
 		}
-		if (typeof toolInput?.register === "function") disposers.push(toolInput.register({
-			onEscape: () => {
-				const machine = (getActiveSurface(context)?.selection ?? selectionService)?.stateMachine;
-				if (machine?.getState?.() !== FREEHAND_TOOL_STATE) return false;
-				return machine.dispatch({ type: "escape" });
-			},
-			onBlur: () => {
-				currentTool?.onWindowBlur?.();
-			}
-		}));
 		const insertStroke = (options = {}) => {
 			ensureActive();
 			const presetData = options.preset ? createPresetStroke(options.preset) : null;
@@ -2938,23 +3063,26 @@ var src_default = {
 			(getActiveSurface(context)?.selection ?? selectionService)?.select?.(createdId);
 			return createdId;
 		};
-		const toggleDrawTool = (options = {}) => {
+		const toggleDrawTool = () => {
 			ensureActive();
-			const surface = getActiveSurface(context);
-			const machine = (surface?.selection ?? selectionService)?.stateMachine;
-			if (currentTool && machine && typeof machine.getState === "function" && typeof machine.transition === "function") {
-				if (machine.getState() === FREEHAND_TOOL_STATE) {
-					machine.transition("root.select.idle");
-					return "root.select.idle";
-				}
-				surface?.selection?.clear?.();
-				machine.transition(FREEHAND_TOOL_STATE);
-				return FREEHAND_TOOL_STATE;
+			syncSurfaceTool();
+			const endpoints = resolveToolEndpoints();
+			const machine = endpoints.selection?.stateMachine;
+			if (Boolean(currentTool?.active) || getMachineStateId(machine) === FREEHAND_TOOL_STATE) {
+				if (currentTool) return currentTool.exit();
+				return transitionMachineToIdle(machine);
 			}
-			return insertStroke({
-				...options,
-				caller: `${EXTENSION_ID}:draw-tool`
-			});
+			if (context?.commands?.get?.("canvas:select-tool")) {
+				context.commands.execute("canvas:select-tool");
+				syncSurfaceTool();
+			}
+			if (currentTool) return currentTool.enter();
+			if (machine && typeof machine.transition === "function") {
+				endpoints.selection?.select?.(null);
+				endpoints.selection?.clear?.();
+				machine.transition(FREEHAND_TOOL_STATE);
+			}
+			return FREEHAND_TOOL_STATE;
 		};
 		const simplifySelectedStrokes = (options = {}) => {
 			ensureActive();
