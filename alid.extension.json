@@ -1,0 +1,148 @@
+{
+  "apiVersion": 2,
+  "id": "drawing.freehand",
+  "settingsSchema": [
+    {
+      "key": "defaultBrush",
+      "label": "기본 브러시 종류",
+      "kind": "select",
+      "defaultValue": "pen",
+      "options": [
+        {
+          "value": "pen",
+          "label": "필압 펜 (가변 굵기)"
+        },
+        {
+          "value": "fine",
+          "label": "정밀 모노라인 펜"
+        },
+        {
+          "value": "marker",
+          "label": "캘리그래피 마커"
+        },
+        {
+          "value": "highlighter",
+          "label": "형광펜 (반투명)"
+        }
+      ]
+    },
+    {
+      "key": "defaultStroke",
+      "label": "기본 잉크 색상",
+      "kind": "select",
+      "defaultValue": "#17181c",
+      "options": [
+        {
+          "value": "#17181c",
+          "label": "차콜 블랙 (#17181c)"
+        },
+        {
+          "value": "#3182f6",
+          "label": "블루 (#3182f6)"
+        },
+        {
+          "value": "#ef4444",
+          "label": "레드 (#ef4444)"
+        },
+        {
+          "value": "#10b981",
+          "label": "에메랄드 (#10b981)"
+        },
+        {
+          "value": "#f59e0b",
+          "label": "앰버 (#f59e0b)"
+        },
+        {
+          "value": "#8b5cf6",
+          "label": "바이올렛 (#8b5cf6)"
+        }
+      ]
+    },
+    {
+      "key": "defaultStrokeWidth",
+      "label": "기본 브러시 굵기",
+      "kind": "number",
+      "defaultValue": 6,
+      "min": 1,
+      "max": 64,
+      "step": 1
+    },
+    {
+      "key": "defaultStreamline",
+      "label": "기본 손떨림 보정 (Streamline)",
+      "kind": "number",
+      "defaultValue": 0.5,
+      "min": 0,
+      "max": 0.95,
+      "step": 0.05
+    },
+    {
+      "key": "simplifyTolerance",
+      "label": "포인트 경량화 허용 오차 (RDP)",
+      "kind": "number",
+      "defaultValue": 0.65,
+      "min": 0,
+      "max": 4,
+      "step": 0.05
+    },
+    {
+      "key": "keepToolActive",
+      "label": "연속 드로잉 모드 (획 완료 후 도구 유지)",
+      "kind": "boolean",
+      "defaultValue": true
+    }
+  ],
+  "version": "0.1.0",
+  "engine": "^0.1.0",
+  "dependencies": {},
+  "optionalDependencies": {
+    "core.select-suite": "^0.1.0"
+  },
+  "conflicts": [],
+  "provides": {
+    "services": [],
+    "aspects": [
+      "drawing.freehand.stroke"
+    ],
+    "hsmSlots": []
+  },
+  "title": "자유 드로잉",
+  "summary": "필압·속도 감응 자유곡선 브러시, 스트림라인 손떨림 보정, Shift 직선 스냅, 형광펜·점선·닫힌 도형을 지원하는 고성능 자유 드로잉 확장",
+  "entry": "dist/plugin.js",
+  "sha256": "f43e7a1bf052def88345f9cae06911be7d1f09210cddafef68b584372894a37c",
+  "aspectIds": [
+    "drawing.freehand.stroke"
+  ],
+  "capabilities": {
+    "readAspects": [
+      "drawing.freehand.stroke",
+      "core.transform",
+      "core.bounds"
+    ],
+    "writeAspects": [
+      "drawing.freehand.stroke",
+      "core.transform",
+      "core.bounds"
+    ],
+    "services": [
+      "canvas.creation",
+      "canvas.active-tool-surface",
+      "canvas.tool-input",
+      "canvas.frames",
+      "canvas.gpu-contributions",
+      "canvas.selection",
+      "canvas.interaction",
+      "canvas.surface",
+      "extensions.preferences",
+      "workspace.tools"
+    ],
+    "commands": [
+      "drawing.freehand:draw-tool",
+      "drawing.freehand:insert-stroke",
+      "drawing.freehand:simplify-stroke",
+      "drawing.freehand:smooth-stroke",
+      "drawing.freehand:toggle-close-stroke",
+      "drawing.freehand:cycle-brush"
+    ]
+  }
+}

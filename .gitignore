@@ -1,0 +1,6 @@
+node_modules/
+.pnpm-store/
+*.log
+.DS_Store
+# dist/plugin.js and alid.extension.json are intentionally committed.
+.alid-dev/
