@@ -317,6 +317,7 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
   };
 
   const surfaceListenersSet = new Set();
+  let zoom = 1;
   const { api, dispose } = plugin.activate({
     world: { getCanonical: () => undefined },
     commands: { register: () => () => {} },
@@ -358,7 +359,7 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
                   out.x = wx + 10;
                   out.y = wy + 20;
                 },
-                getZoom: () => 1,
+                getZoom: () => zoom,
                 requestRender() {},
               },
               selection: {
@@ -421,7 +422,14 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
   });
 
   assert.equal(createdEntities.length, 0, 'pointermove must never write to canonical world before pointerup');
+  // The preview scales about world (0, 0); a rounded zoom would shift it further the farther
+  // the stroke is from the origin, so it must use the host's exact zoom.
+  zoom = 0.8734;
   frameCallback?.();
+  api.getActiveTool().flushFrame();
+  const hudGroup = api.getActiveTool().hudWorldGroup;
+  assert.equal(hudGroup.getAttribute('transform'), 'translate(0 0) scale(0.8734)');
+  zoom = 1;
 
   // 3. Korean IME composition guard: Escape during IME composition must NOT cancel drawing
   winListeners.get('compositionstart')();

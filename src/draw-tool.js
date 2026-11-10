@@ -200,13 +200,15 @@ export class FreeDrawTool {
       const left = finiteOr(hudRect?.left, 0);
       const top = finiteOr(hudRect?.top, 0);
       host.worldToScreen(0, 0, this.tmpOrigin);
-      const tx = round2(finiteOr(this.tmpOrigin.x, 0) - left);
-      const ty = round2(finiteOr(this.tmpOrigin.y, 0) - top);
-      this.hudWorldGroup.setAttribute('transform', `translate(${tx} ${ty}) scale(${round2(zoom)})`);
+      // No rounding: the scale applies about world (0, 0), so any zoom error grows with the
+      // stroke's world position and the preview drifts away from the committed stroke.
+      const tx = finiteOr(this.tmpOrigin.x, 0) - left;
+      const ty = finiteOr(this.tmpOrigin.y, 0) - top;
+      this.hudWorldGroup.setAttribute('transform', `translate(${tx} ${ty}) scale(${zoom})`);
       return;
     }
     const cam = this.getCamera();
-    this.hudWorldGroup.setAttribute('transform', `translate(${round2(cam.x)},${round2(cam.y)}) scale(${round2(cam.zoom)})`);
+    this.hudWorldGroup.setAttribute('transform', `translate(${cam.x},${cam.y}) scale(${cam.zoom})`);
   }
 
   resolveActiveBrushProps() {
