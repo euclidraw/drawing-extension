@@ -652,9 +652,11 @@ export class FreeDrawTool {
   commitDraft(draft, { reenter }) {
     if (!draft || draft.rawPoints.length === 0) return null;
     const { rawPoints, isPen, isClosed, baseProps, zoom } = draft;
-    const prefTol = finiteOr(Number(this.options?.getPreference?.('simplifyTolerance', 0.65)), 0.65);
-    const worldTolerance = prefTol > 0 ? Math.max(0.15, prefTol / zoom) : 0;
-    const normalized = normalizeStrokeGeometry(rawPoints, { simplifyTolerance: worldTolerance });
+    // tldraw parity: commit exactly the points the live preview drew. Simplifying here would
+    // feed streamline/outline different input and visibly change the stroke on pointerup.
+    // Point reduction stays available as the explicit simplify-stroke command.
+    void zoom;
+    const normalized = normalizeStrokeGeometry(rawPoints, { simplifyTolerance: 0 });
     const strokeProps = {
       ...STROKE_DEFAULTS,
       ...baseProps,

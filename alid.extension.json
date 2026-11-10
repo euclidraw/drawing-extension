@@ -109,7 +109,7 @@
   "title": "자유 드로잉",
   "summary": "필압·속도 감응 자유곡선 브러시, 스트림라인 손떨림 보정, Shift 직선 스냅, 형광펜·점선·닫힌 도형을 지원하는 고성능 자유 드로잉 확장",
   "entry": "dist/plugin.js",
-  "sha256": "073e758fba2d2f992790e3d32ddaa708c8c2e206fd65b9475d05cdbdf0c7585d",
+  "sha256": "8bed7b9bbe8203c2f508b79c66e03f8a90566ec753a86013c309d97a58f5c53e",
   "aspectIds": [
     "drawing.freehand.stroke"
   ],

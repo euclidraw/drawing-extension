@@ -14,6 +14,7 @@ import plugin, {
   getSvgPathFromStrokePoints,
   normalizeStrokeGeometry,
   planFreehandChanges,
+  resolveStrokeStyle,
   simplifyStrokePoints,
 } from '../dist/plugin.js';
 
@@ -497,6 +498,44 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
   dispose();
 });
 
+test('committed stroke renders the same path as the live preview', () => {
+  const raw = [];
+  let x = 100;
+  let y = 100;
+  let a = 0;
+  for (let i = 0; i < 120; i++) {
+    a += Math.sin(i * 0.37) * 0.3;
+    x += Math.cos(a) * (2 + (i % 7));
+    y += Math.sin(a) * (2 + (i % 5));
+    raw.push({ x, y, z: 0.5, seg: i === 60 || i === 61 ? 1 : 0 });
+  }
+  const style = resolveStrokeStyle({ ...STROKE_DEFAULTS });
+  const live = getStrokePoints(raw, { size: style.effectiveWidth, streamline: style.streamline });
+  const liveD = getSvgPathFromStrokePoints(
+    getStrokeOutlinePoints(live, {
+      size: style.effectiveWidth,
+      thinning: style.thinning,
+      smoothing: style.smoothing,
+      simulatePressure: true,
+      taperStart: style.taperStart,
+      taperEnd: style.taperEnd,
+    }),
+    true,
+  );
+  const n = normalizeStrokeGeometry(raw);
+  const props = Object.freeze({ ...STROKE_DEFAULTS, points: n.points, segments: n.segments, baseWidth: n.baseWidth, baseHeight: n.baseHeight });
+  const committed = deriveStrokeGeometry(props, 'c', {
+    getCanonical: (_id, k) => (k === 'core.transform' ? { x: n.x, y: n.y, rotation: 0 } : { width: n.width, height: n.height }),
+  });
+  const nums = d => (d.match(/-?\d+(\.\d+)?/g) ?? []).map(Number);
+  const A = nums(liveD);
+  const B = nums(committed.outlinePathD);
+  assert.equal(A.length, B.length, 'committed outline must have the same shape as the preview');
+  let worst = 0;
+  for (let i = 0; i < A.length; i += 2) worst = Math.max(worst, Math.hypot(A[i] - n.x - B[i], A[i + 1] - n.y - B[i + 1]));
+  assert.ok(worst < 0.1, `committed outline drifts ${worst}px from the preview`);
+});
+
 test('analytical selection contribution and GPU polyline contribution', () => {
   const props = {
     ...STROKE_DEFAULTS,
@@ -555,7 +594,9 @@ test('analytical selection contribution and GPU polyline contribution', () => {
   const gpu = createStrokeGpuContribution();
   const poly = gpu.getPolyline('s1', view);
   assert.ok(poly);
-  assert.equal(poly.width, 8);
+  assert.equal(poly.strokeWidth, 8);
+  assert.equal(poly.strokeCap, 'round');
+  assert.equal(poly.strokeJoin, 'round');
   assert.equal(poly.color.length, 4);
 });
 

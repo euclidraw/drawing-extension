@@ -471,7 +471,7 @@ function sanitizePoints(rawPoints, segments) {
 		if (!seg || seg.type !== "straight") continue;
 		const start = Math.max(0, Math.trunc(finiteOr(seg.startIndex, 0)));
 		const end = Math.min(8191, Math.trunc(finiteOr(seg.endIndex, start)));
-		for (let i = start; i <= end; i++) straightFlags[i] = 1;
+		for (let i = start + 1; i <= end; i++) straightFlags[i] = 1;
 	}
 	const out = [];
 	if (Array.isArray(rawPoints)) {
@@ -1722,8 +1722,7 @@ var FreeDrawTool = class {
 	commitDraft(draft, { reenter }) {
 		if (!draft || draft.rawPoints.length === 0) return null;
 		const { rawPoints, isPen, isClosed, baseProps, zoom } = draft;
-		const prefTol = finiteOr(Number(this.options?.getPreference?.("simplifyTolerance", .65)), .65);
-		const normalized = normalizeStrokeGeometry(rawPoints, { simplifyTolerance: prefTol > 0 ? Math.max(.15, prefTol / zoom) : 0 });
+		const normalized = normalizeStrokeGeometry(rawPoints, { simplifyTolerance: 0 });
 		const strokeProps = {
 			...STROKE_DEFAULTS,
 			...baseProps,
@@ -2143,7 +2142,9 @@ function createStrokeGpuContribution() {
 			if (!color) return void 0;
 			return {
 				points: sampledPoints,
-				width: style.effectiveWidth,
+				strokeWidth: style.effectiveWidth,
+				strokeCap: "round",
+				strokeJoin: "round",
 				color
 			};
 		}

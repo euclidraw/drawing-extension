@@ -260,9 +260,13 @@ export function createStrokeGpuContribution() {
       }
       const color = parseHexToRgba(style.stroke);
       if (!color) return undefined;
+      // Alid's GpuPolylineGeometry reads strokeWidth/strokeCap/strokeJoin; match the SVG
+      // preview's round caps and joins so the committed line looks like the one drawn.
       return {
         points: sampledPoints,
-        width: style.effectiveWidth,
+        strokeWidth: style.effectiveWidth,
+        strokeCap: 'round',
+        strokeJoin: 'round',
         color,
       };
     },

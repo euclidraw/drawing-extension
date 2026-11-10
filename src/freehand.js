@@ -206,7 +206,8 @@ export function sanitizePoints(rawPoints, segments) {
       if (!seg || seg.type !== 'straight') continue;
       const start = Math.max(0, Math.trunc(finiteOr(seg.startIndex, 0)));
       const end = Math.min(MAX_STROKE_POINTS - 1, Math.trunc(finiteOr(seg.endIndex, start)));
-      for (let i = start; i <= end; i++) straightFlags[i] = 1;
+      // startIndex is the anchor the straight run leaves from; the anchor itself is freehand.
+      for (let i = start + 1; i <= end; i++) straightFlags[i] = 1;
     }
   }
 
