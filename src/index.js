@@ -98,6 +98,7 @@ export const freehandStrokeAspect = Object.freeze({
   dependsOnComputed: [],
   defaults: STROKE_DEFAULTS,
   derive: deriveStrokeGeometry,
+  renderMode: 'vector',
   renderDom: renderStrokeDom,
   renderSvg: renderStrokeSvg,
   ui: {
