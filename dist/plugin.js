@@ -148,6 +148,18 @@ var DASH_TYPES = Object.freeze([
 var MAX_STROKE_POINTS = 8192;
 var RATE_OF_PRESSURE_CHANGE = .275;
 var CAP_SEGMENTS = 12;
+var CORNER_STEPS = 13;
+var FIXED_PI = Math.PI + 1e-4;
+function rotateAround(px, py, cx, cy, angle) {
+	const s = Math.sin(angle);
+	const c = Math.cos(angle);
+	const dx = px - cx;
+	const dy = py - cy;
+	return {
+		x: cx + dx * c - dy * s,
+		y: cy + dx * s + dy * c
+	};
+}
 var SAFE_COLOR_PATTERN = /^(#[0-9a-f]{3,8}|rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\))$/i;
 var DEFAULT_SAMPLE_POINTS = Object.freeze([
 	Object.freeze({
@@ -810,11 +822,13 @@ function getStrokeOutlinePoints(strokePoints, options = {}) {
 	let prevLy = strokePoints[0].y;
 	let prevRx = strokePoints[0].x;
 	let prevRy = strokePoints[0].y;
-	let firstRadius = size * .5;
+	let firstRadius = -1;
 	let lastRadius = size * .5;
+	let isPrevPointSharpCorner = false;
 	for (let i = 0; i < n; i++) {
 		const pt = strokePoints[i];
 		const isLast = i === n - 1;
+		if (!isLast && totalLength - pt.runningLength < 3) continue;
 		let pressure = pt.pressure;
 		if (thinning > 0) {
 			if (simulatePressure) {
@@ -822,7 +836,6 @@ function getStrokeOutlinePoints(strokePoints, options = {}) {
 				const rp = Math.min(1, 1 - sp);
 				pressure = Math.min(1, prevPressure + (rp - prevPressure) * (sp * RATE_OF_PRESSURE_CHANGE));
 			} else pressure = prevPressure + (pressure - prevPressure) * .5;
-			prevPressure = pressure;
 		}
 		let radius = getStrokeRadius(size, thinning, pressure);
 		if (taperStart > 0 && pt.runningLength < taperStart) {
@@ -834,30 +847,55 @@ function getStrokeOutlinePoints(strokePoints, options = {}) {
 			radius *= u * (2 - u);
 		}
 		radius = Math.max(.25, radius);
-		if (i === 0) firstRadius = radius;
-		if (isLast) lastRadius = radius;
+		if (firstRadius < 0) firstRadius = radius;
+		lastRadius = radius;
 		const vx = pt.vx;
 		const vy = pt.vy;
-		const nx = -vy;
-		const ny = vx;
-		const dot = vx * prevVx + vy * prevVy;
-		if (i > 0 && dot < -.15) {
-			const mx = -prevVy * radius;
-			const my = prevVx * radius;
-			leftPts.push({
-				x: pt.x - mx,
-				y: pt.y - my
-			});
-			rightPts.push({
-				x: pt.x + mx,
-				y: pt.y + my
-			});
+		const next = isLast ? pt : strokePoints[i + 1];
+		const nextDpr = isLast ? 1 : vx * next.vx + vy * next.vy;
+		const isPointSharpCorner = vx * prevVx + vy * prevVy < 0 && !isPrevPointSharpCorner;
+		const isNextPointSharpCorner = nextDpr < 0;
+		if (isPointSharpCorner || isNextPointSharpCorner) {
+			const ox = prevVy * radius;
+			const oy = -prevVx * radius;
+			let tl = null;
+			let tr = null;
+			for (let step = 0; step <= CORNER_STEPS; step++) {
+				const a = FIXED_PI * (step / CORNER_STEPS);
+				tl = rotateAround(pt.x - ox, pt.y - oy, pt.x, pt.y, a);
+				tr = rotateAround(pt.x + ox, pt.y + oy, pt.x, pt.y, -a);
+				rightPts.push(tl);
+				leftPts.push(tr);
+			}
+			prevRx = tl.x;
+			prevRy = tl.y;
+			prevLx = tr.x;
+			prevLy = tr.y;
+			if (isNextPointSharpCorner) isPrevPointSharpCorner = true;
+			continue;
 		}
-		const lx = pt.x - nx * radius;
-		const ly = pt.y - ny * radius;
-		const rx = pt.x + nx * radius;
-		const ry = pt.y + ny * radius;
-		if (i === 0 || isLast || (lx - prevLx) * (lx - prevLx) + (ly - prevLy) * (ly - prevLy) >= minDistSq) {
+		isPrevPointSharpCorner = false;
+		if (isLast) {
+			const ox = vy * radius;
+			const oy = -vx * radius;
+			rightPts.push({
+				x: pt.x - ox,
+				y: pt.y - oy
+			});
+			leftPts.push({
+				x: pt.x + ox,
+				y: pt.y + oy
+			});
+			continue;
+		}
+		const bx = next.vx + (vx - next.vx) * nextDpr;
+		const ox = (next.vy + (vy - next.vy) * nextDpr) * radius;
+		const oy = -bx * radius;
+		const rx = pt.x - ox;
+		const ry = pt.y - oy;
+		const lx = pt.x + ox;
+		const ly = pt.y + oy;
+		if (i <= 1 || (lx - prevLx) * (lx - prevLx) + (ly - prevLy) * (ly - prevLy) > minDistSq) {
 			leftPts.push({
 				x: lx,
 				y: ly
@@ -865,7 +903,7 @@ function getStrokeOutlinePoints(strokePoints, options = {}) {
 			prevLx = lx;
 			prevLy = ly;
 		}
-		if (i === 0 || isLast || (rx - prevRx) * (rx - prevRx) + (ry - prevRy) * (ry - prevRy) >= minDistSq) {
+		if (i <= 1 || (rx - prevRx) * (rx - prevRx) + (ry - prevRy) * (ry - prevRy) > minDistSq) {
 			rightPts.push({
 				x: rx,
 				y: ry
@@ -873,9 +911,11 @@ function getStrokeOutlinePoints(strokePoints, options = {}) {
 			prevRx = rx;
 			prevRy = ry;
 		}
+		prevPressure = pressure;
 		prevVx = vx;
 		prevVy = vy;
 	}
+	if (firstRadius < 0) firstRadius = lastRadius;
 	const startPt = strokePoints[0];
 	const endPt = strokePoints[n - 1];
 	const firstL = leftPts[0] ?? startPt;
@@ -892,8 +932,9 @@ function getStrokeOutlinePoints(strokePoints, options = {}) {
 			const dx = lastL.x - lastR.x;
 			const dy = lastL.y - lastR.y;
 			const startAngle = Math.atan2(dy, dx);
+			const front = Math.cos(startAngle + Math.PI * .5) * endPt.vx + Math.sin(startAngle + Math.PI * .5) * endPt.vy < 0 ? 1 : -1;
 			for (let i = 1; i < CAP_SEGMENTS; i++) {
-				const a = startAngle + i / CAP_SEGMENTS * Math.PI;
+				const a = startAngle + front * (i / CAP_SEGMENTS) * Math.PI;
 				endCap.push({
 					x: endPt.x + Math.cos(a) * lastRadius,
 					y: endPt.y + Math.sin(a) * lastRadius
@@ -911,8 +952,9 @@ function getStrokeOutlinePoints(strokePoints, options = {}) {
 			const dx = firstR.x - firstL.x;
 			const dy = firstR.y - firstL.y;
 			const startAngle = Math.atan2(dy, dx);
+			const back = Math.cos(startAngle + Math.PI * .5) * startPt.vx + Math.sin(startAngle + Math.PI * .5) * startPt.vy > 0 ? 1 : -1;
 			for (let i = 1; i < CAP_SEGMENTS; i++) {
-				const a = startAngle + i / CAP_SEGMENTS * Math.PI;
+				const a = startAngle + back * (i / CAP_SEGMENTS) * Math.PI;
 				startCap.push({
 					x: startPt.x + Math.cos(a) * firstRadius,
 					y: startPt.y + Math.sin(a) * firstRadius

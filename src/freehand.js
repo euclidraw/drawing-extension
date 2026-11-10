@@ -10,6 +10,16 @@ export const MAX_STROKE_POINTS = 8192;
 
 const RATE_OF_PRESSURE_CHANGE = 0.275;
 const CAP_SEGMENTS = 12;
+const CORNER_STEPS = 13;
+const FIXED_PI = Math.PI + 0.0001;
+
+function rotateAround(px, py, cx, cy, angle) {
+  const s = Math.sin(angle);
+  const c = Math.cos(angle);
+  const dx = px - cx;
+  const dy = py - cy;
+  return { x: cx + dx * c - dy * s, y: cy + dx * s + dy * c };
+}
 
 const SAFE_COLOR_PATTERN = /^(#[0-9a-f]{3,8}|rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\))$/i;
 
@@ -577,20 +587,25 @@ export function getStrokeOutlinePoints(strokePoints, options = {}) {
     }
   }
 
+  // perfect-freehand corner model. Direction vectors point from a point back to its
+  // predecessor; offsets are taken perpendicular to a blend of this and the next direction.
   let prevVx = strokePoints[0].vx;
   let prevVy = strokePoints[0].vy;
   let prevLx = strokePoints[0].x;
   let prevLy = strokePoints[0].y;
   let prevRx = strokePoints[0].x;
   let prevRy = strokePoints[0].y;
-  let firstRadius = size * 0.5;
+  let firstRadius = -1;
   let lastRadius = size * 0.5;
+  let isPrevPointSharpCorner = false;
 
   for (let i = 0; i < n; i++) {
     const pt = strokePoints[i];
     const isLast = i === n - 1;
-    let pressure = pt.pressure;
+    // Points in the last few units add only end jitter (perfect-freehand drops them too).
+    if (!isLast && totalLength - pt.runningLength < 3) continue;
 
+    let pressure = pt.pressure;
     if (thinning > 0) {
       if (simulatePressure) {
         const sp = Math.min(1, pt.distance / size);
@@ -599,12 +614,9 @@ export function getStrokeOutlinePoints(strokePoints, options = {}) {
       } else {
         pressure = prevPressure + (pressure - prevPressure) * 0.5;
       }
-      prevPressure = pressure;
     }
 
     let radius = getStrokeRadius(size, thinning, pressure);
-
-    // Apply start and end tapers
     if (taperStart > 0 && pt.runningLength < taperStart) {
       const u = pt.runningLength / taperStart;
       radius *= u * (2 - u);
@@ -614,45 +626,76 @@ export function getStrokeOutlinePoints(strokePoints, options = {}) {
       radius *= u * (2 - u);
     }
     radius = Math.max(0.25, radius);
-
-    if (i === 0) firstRadius = radius;
-    if (isLast) lastRadius = radius;
+    if (firstRadius < 0) firstRadius = radius;
+    lastRadius = radius;
 
     const vx = pt.vx;
     const vy = pt.vy;
-    // Perpendicular normal (-vy, vx)
-    const nx = -vy;
-    const ny = vx;
+    const next = isLast ? pt : strokePoints[i + 1];
+    const nextDpr = isLast ? 1 : vx * next.vx + vy * next.vy;
+    const prevDpr = vx * prevVx + vy * prevVy;
+    const isPointSharpCorner = prevDpr < 0 && !isPrevPointSharpCorner;
+    const isNextPointSharpCorner = nextDpr < 0;
 
-    const dot = vx * prevVx + vy * prevVy;
-    if (i > 0 && dot < -0.15) {
-      // Sharp corner turn: insert rounded bevel points
-      const mx = -prevVy * radius;
-      const my = prevVx * radius;
-      leftPts.push({ x: pt.x - mx, y: pt.y - my });
-      rightPts.push({ x: pt.x + mx, y: pt.y + my });
+    // Written in perfect-freehand's convention (per(v) = (vy, -vx), its left = point - offset).
+    // Our cap code expects the mirrored sides, so pf-left goes to rightPts and pf-right to leftPts.
+    if (isPointSharpCorner || isNextPointSharpCorner) {
+      // Sharp turn: sweep a half circle around the corner so the outline wraps the turn
+      // instead of crossing itself.
+      const ox = prevVy * radius;
+      const oy = -prevVx * radius;
+      let tl = null;
+      let tr = null;
+      for (let step = 0; step <= CORNER_STEPS; step++) {
+        const a = FIXED_PI * (step / CORNER_STEPS);
+        tl = rotateAround(pt.x - ox, pt.y - oy, pt.x, pt.y, a);
+        tr = rotateAround(pt.x + ox, pt.y + oy, pt.x, pt.y, -a);
+        rightPts.push(tl);
+        leftPts.push(tr);
+      }
+      prevRx = tl.x;
+      prevRy = tl.y;
+      prevLx = tr.x;
+      prevLy = tr.y;
+      if (isNextPointSharpCorner) isPrevPointSharpCorner = true;
+      continue;
+    }
+    isPrevPointSharpCorner = false;
+
+    if (isLast) {
+      const ox = vy * radius;
+      const oy = -vx * radius;
+      rightPts.push({ x: pt.x - ox, y: pt.y - oy });
+      leftPts.push({ x: pt.x + ox, y: pt.y + oy });
+      continue;
     }
 
-    const lx = pt.x - nx * radius;
-    const ly = pt.y - ny * radius;
-    const rx = pt.x + nx * radius;
-    const ry = pt.y + ny * radius;
+    // Blend toward the next direction so gentle turns get a mitred, gap-free offset.
+    const bx = next.vx + (vx - next.vx) * nextDpr;
+    const by = next.vy + (vy - next.vy) * nextDpr;
+    const ox = by * radius;
+    const oy = -bx * radius;
+    const rx = pt.x - ox;
+    const ry = pt.y - oy;
+    const lx = pt.x + ox;
+    const ly = pt.y + oy;
 
-    if (i === 0 || isLast || (lx - prevLx) * (lx - prevLx) + (ly - prevLy) * (ly - prevLy) >= minDistSq) {
+    if (i <= 1 || (lx - prevLx) * (lx - prevLx) + (ly - prevLy) * (ly - prevLy) > minDistSq) {
       leftPts.push({ x: lx, y: ly });
       prevLx = lx;
       prevLy = ly;
     }
-
-    if (i === 0 || isLast || (rx - prevRx) * (rx - prevRx) + (ry - prevRy) * (ry - prevRy) >= minDistSq) {
+    if (i <= 1 || (rx - prevRx) * (rx - prevRx) + (ry - prevRy) * (ry - prevRy) > minDistSq) {
       rightPts.push({ x: rx, y: ry });
       prevRx = rx;
       prevRy = ry;
     }
 
+    prevPressure = pressure;
     prevVx = vx;
     prevVy = vy;
   }
+  if (firstRadius < 0) firstRadius = lastRadius;
 
   const startPt = strokePoints[0];
   const endPt = strokePoints[n - 1];
@@ -669,8 +712,10 @@ export function getStrokeOutlinePoints(strokePoints, options = {}) {
       const dx = lastL.x - lastR.x;
       const dy = lastL.y - lastR.y;
       const startAngle = Math.atan2(dy, dx);
+      // Sweep around the front of the stroke end (in the direction of travel).
+      const front = Math.cos(startAngle + Math.PI * 0.5) * endPt.vx + Math.sin(startAngle + Math.PI * 0.5) * endPt.vy < 0 ? 1 : -1;
       for (let i = 1; i < CAP_SEGMENTS; i++) {
-        const a = startAngle + (i / CAP_SEGMENTS) * Math.PI;
+        const a = startAngle + front * (i / CAP_SEGMENTS) * Math.PI;
         endCap.push({
           x: endPt.x + Math.cos(a) * lastRadius,
           y: endPt.y + Math.sin(a) * lastRadius,
@@ -687,8 +732,10 @@ export function getStrokeOutlinePoints(strokePoints, options = {}) {
       const dx = firstR.x - firstL.x;
       const dy = firstR.y - firstL.y;
       const startAngle = Math.atan2(dy, dx);
+      // Sweep around the back of the stroke start (away from the direction of travel).
+      const back = Math.cos(startAngle + Math.PI * 0.5) * startPt.vx + Math.sin(startAngle + Math.PI * 0.5) * startPt.vy > 0 ? 1 : -1;
       for (let i = 1; i < CAP_SEGMENTS; i++) {
-        const a = startAngle + (i / CAP_SEGMENTS) * Math.PI;
+        const a = startAngle + back * (i / CAP_SEGMENTS) * Math.PI;
         startCap.push({
           x: startPt.x + Math.cos(a) * firstRadius,
           y: startPt.y + Math.sin(a) * firstRadius,

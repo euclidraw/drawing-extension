@@ -536,6 +536,51 @@ test('committed stroke renders the same path as the live preview', () => {
   assert.ok(worst < 0.1, `committed outline drifts ${worst}px from the preview`);
 });
 
+test('sharp turns and stroke ends leave no gaps in the filled outline', () => {
+  // Non-zero winding test: a centerline point outside the fill is a visible break in the ink.
+  const winding = (poly, x, y) => {
+    let w = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      const side = (b.x - a.x) * (y - a.y) - (x - a.x) * (b.y - a.y);
+      if (a.y <= y) {
+        if (b.y > y && side > 0) w++;
+      } else if (b.y <= y && side < 0) w--;
+    }
+    return w;
+  };
+  const style = resolveStrokeStyle({ ...STROKE_DEFAULTS });
+  const shapes = {
+    zigzag: Array.from({ length: 120 }, (_, n) => {
+      const k = Math.floor(n / 20);
+      const i = n % 20;
+      return { x: k * 40 + (k % 2 ? 40 - i * 2 : i * 2), y: k % 2 ? 100 - i * 5 : i * 5, z: 0.5 };
+    }),
+    hairpin: Array.from({ length: 80 }, (_, i) => (i < 40 ? { x: i * 4, y: 0, z: 0.5 } : { x: 160 - (i - 40) * 4, y: 6, z: 0.5 })),
+    square: Array.from({ length: 100 }, (_, n) => {
+      const c = [[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]];
+      const s = Math.floor(n / 25);
+      const u = (n % 25) / 25;
+      return { x: c[s][0] + (c[s + 1][0] - c[s][0]) * u, y: c[s][1] + (c[s + 1][1] - c[s][1]) * u, z: 0.5 };
+    }),
+  };
+  for (const [name, raw] of Object.entries(shapes)) {
+    const sp = getStrokePoints(raw, { size: style.effectiveWidth, streamline: style.streamline });
+    const outline = getStrokeOutlinePoints(sp, {
+      size: style.effectiveWidth,
+      thinning: style.thinning,
+      smoothing: style.smoothing,
+      simulatePressure: true,
+      taperStart: style.taperStart,
+      taperEnd: style.taperEnd,
+    });
+    for (let i = 1; i < sp.length - 1; i++) {
+      assert.notEqual(winding(outline, sp[i].x, sp[i].y), 0, `${name}: ink breaks at centerline point ${i}`);
+    }
+  }
+});
+
 test('analytical selection contribution and GPU polyline contribution', () => {
   const props = {
     ...STROKE_DEFAULTS,
