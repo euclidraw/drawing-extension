@@ -1,7 +1,7 @@
 var extension_default = {
 	id: "drawing.freehand",
 	title: "자유 드로잉",
-	version: "0.1.0",
+	version: "0.2.0",
 	summary: "필압·속도 감응 자유곡선 브러시, 스트림라인 손떨림 보정, Shift 직선 스냅, 형광펜·점선·닫힌 도형을 지원하는 고성능 자유 드로잉 확장",
 	engine: "^0.1.0",
 	dependencies: {},
@@ -85,7 +85,7 @@ var settingsSchema = Object.freeze([
 		key: "defaultStrokeWidth",
 		label: "기본 브러시 굵기",
 		kind: "number",
-		defaultValue: 6,
+		defaultValue: 20,
 		min: 1,
 		max: 64,
 		step: 1
@@ -205,7 +205,7 @@ var STROKE_DEFAULTS = Object.freeze({
 	baseHeight: 96,
 	brush: "pen",
 	stroke: "#17181c",
-	strokeWidth: 6,
+	strokeWidth: 20,
 	dash: "solid",
 	thinning: .55,
 	streamline: .5,
@@ -1633,7 +1633,7 @@ var FreeDrawTool = class {
 			}
 		}
 		if (this.rawCount >= 6) {
-			const styleWidth = finiteOr(this.activeStyleProps?.strokeWidth, 6);
+			const styleWidth = finiteOr(this.activeStyleProps?.strokeWidth, STROKE_DEFAULTS.strokeWidth);
 			const closeThreshold = Math.max(10 / zoom, styleWidth * 1.6);
 			const endX = this.rawX[this.rawCount - 1];
 			const endY = this.rawY[this.rawCount - 1];

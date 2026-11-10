@@ -44,7 +44,7 @@ export const settingsSchema = Object.freeze([
     key: 'defaultStrokeWidth',
     label: '기본 브러시 굵기',
     kind: 'number',
-    defaultValue: 6,
+    defaultValue: 20,
     min: 1,
     max: 64,
     step: 1,

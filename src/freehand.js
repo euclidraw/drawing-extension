@@ -40,7 +40,7 @@ export const STROKE_DEFAULTS = Object.freeze({
   baseHeight: DEFAULT_BASE_HEIGHT,
   brush: 'pen',
   stroke: '#17181c',
-  strokeWidth: 6,
+  strokeWidth: 20,
   dash: 'solid',
   thinning: 0.55,
   streamline: 0.5,

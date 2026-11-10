@@ -483,7 +483,7 @@ export class FreeDrawTool {
 
     // Check loop auto-close when Alt is held or closed fill is configured
     if (this.rawCount >= 6) {
-      const styleWidth = finiteOr(this.activeStyleProps?.strokeWidth, 6);
+      const styleWidth = finiteOr(this.activeStyleProps?.strokeWidth, STROKE_DEFAULTS.strokeWidth);
       const closeThreshold = Math.max(10 / zoom, styleWidth * 1.6);
       const endX = this.rawX[this.rawCount - 1];
       const endY = this.rawY[this.rawCount - 1];
