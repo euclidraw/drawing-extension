@@ -1,7 +1,7 @@
 var extension_default = {
 	id: "drawing.freehand",
 	title: "자유 드로잉",
-	version: "0.2.2",
+	version: "0.2.3",
 	summary: "필압·속도 감응 자유곡선 브러시, 스트림라인 손떨림 보정, Shift 직선 스냅, 형광펜·점선·닫힌 도형을 지원하는 고성능 자유 드로잉 확장",
 	engine: "^0.1.0",
 	dependencies: {},
@@ -1954,12 +1954,12 @@ function ensureDerived(props, derived, entityId) {
 function buildInnerStrokeSvgMarkup(compiled) {
 	const { style, renderMode, outlinePathD, centerlinePathD, fillPathD } = compiled;
 	const parts = [];
-	if (fillPathD && style.fill !== "none" && style.fill !== "transparent" && style.fillOpacity > 0) parts.push(`<path class="alid-freehand-fill" d="${escapeAttr(fillPathD)}" fill="${escapeAttr(style.fill)}" fill-opacity="${round2(style.fillOpacity * style.effectiveOpacity)}" stroke="none" />`);
+	if (fillPathD && style.fill !== "none" && style.fill !== "transparent" && style.fillOpacity > 0) parts.push(`<path d="${escapeAttr(fillPathD)}" fill="${escapeAttr(style.fill)}" fill-opacity="${round2(style.fillOpacity * style.effectiveOpacity)}" stroke="none" />`);
 	if (style.stroke !== "none" && style.stroke !== "transparent" && style.effectiveWidth > 0) {
-		if (renderMode === "freehand-outline" || renderMode === "dot") parts.push(`<path class="alid-freehand-ink" d="${escapeAttr(outlinePathD)}" fill="${escapeAttr(style.stroke)}" fill-opacity="${style.effectiveOpacity}" stroke="none" />`);
+		if (renderMode === "freehand-outline" || renderMode === "dot") parts.push(`<path d="${escapeAttr(outlinePathD)}" fill="${escapeAttr(style.stroke)}" fill-opacity="${style.effectiveOpacity}" stroke="none" />`);
 		else if (centerlinePathD) {
 			const dashAttr = style.dashArray ? ` stroke-dasharray="${escapeAttr(style.dashArray)}"` : "";
-			parts.push(`<path class="alid-freehand-ink" d="${escapeAttr(centerlinePathD)}" fill="none" stroke="${escapeAttr(style.stroke)}" stroke-width="${round2(style.effectiveWidth)}" stroke-opacity="${style.effectiveOpacity}" stroke-linecap="round" stroke-linejoin="round"${dashAttr} />`);
+			parts.push(`<path d="${escapeAttr(centerlinePathD)}" fill="none" stroke="${escapeAttr(style.stroke)}" stroke-width="${round2(style.effectiveWidth)}" stroke-opacity="${style.effectiveOpacity}" stroke-linecap="round" stroke-linejoin="round"${dashAttr} />`);
 		}
 	}
 	return parts.join("");
@@ -1974,7 +1974,7 @@ function renderStrokeDom(container, props, derived, entityId) {
 	const w = Math.max(1, round2(compiled.width));
 	const h = Math.max(1, round2(compiled.height));
 	const inner = buildInnerStrokeSvgMarkup(compiled);
-	const svgMarkup = `<svg xmlns="http://www.w3.org/2000/svg" class="alid-freehand-svg" data-brush="${escapeAttr(compiled.style.brush)}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" overflow="visible" style="display:block;width:100%;height:100%;overflow:visible;pointer-events:none">${inner}</svg>`;
+	const svgMarkup = `<svg xmlns="http://www.w3.org/2000/svg" data-brush="${escapeAttr(compiled.style.brush)}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" overflow="visible" style="display:block;width:100%;height:100%;overflow:visible;pointer-events:none">${inner}</svg>`;
 	if (container.__alidFreehandLastSvg !== svgMarkup || container.innerHTML !== svgMarkup) {
 		container.innerHTML = svgMarkup;
 		container.__alidFreehandLastSvg = svgMarkup;
@@ -1999,7 +1999,7 @@ function renderStrokeSvg(props, derived, entityId) {
 	const cy = round2(h * .5);
 	const transformAttr = deg !== 0 ? `translate(${x},${y}) rotate(${deg} ${cx} ${cy})` : `translate(${x},${y})`;
 	const inner = buildInnerStrokeSvgMarkup(compiled);
-	return { svg: `<g class="alid-freehand-export" data-entity-id="${escapeAttr(entityId ?? "")}" data-brush="${escapeAttr(compiled.style.brush)}" transform="${transformAttr}">${inner}</g>` };
+	return { svg: `<g data-entity-id="${escapeAttr(entityId ?? "")}" data-brush="${escapeAttr(compiled.style.brush)}" transform="${transformAttr}">${inner}</g>` };
 }
 // src/selection.js
 var COMPUTED_STROKE_ID = `computed.${STROKE_ASPECT_ID}`;

@@ -47,19 +47,19 @@ export function buildInnerStrokeSvgMarkup(compiled) {
 
   if (fillPathD && style.fill !== 'none' && style.fill !== 'transparent' && style.fillOpacity > 0) {
     parts.push(
-      `<path class="alid-freehand-fill" d="${escapeAttr(fillPathD)}" fill="${escapeAttr(style.fill)}" fill-opacity="${round2(style.fillOpacity * style.effectiveOpacity)}" stroke="none" />`,
+      `<path d="${escapeAttr(fillPathD)}" fill="${escapeAttr(style.fill)}" fill-opacity="${round2(style.fillOpacity * style.effectiveOpacity)}" stroke="none" />`,
     );
   }
 
   if (style.stroke !== 'none' && style.stroke !== 'transparent' && style.effectiveWidth > 0) {
     if (renderMode === 'freehand-outline' || renderMode === 'dot') {
       parts.push(
-        `<path class="alid-freehand-ink" d="${escapeAttr(outlinePathD)}" fill="${escapeAttr(style.stroke)}" fill-opacity="${style.effectiveOpacity}" stroke="none" />`,
+        `<path d="${escapeAttr(outlinePathD)}" fill="${escapeAttr(style.stroke)}" fill-opacity="${style.effectiveOpacity}" stroke="none" />`,
       );
     } else if (centerlinePathD) {
       const dashAttr = style.dashArray ? ` stroke-dasharray="${escapeAttr(style.dashArray)}"` : '';
       parts.push(
-        `<path class="alid-freehand-ink" d="${escapeAttr(centerlinePathD)}" fill="none" stroke="${escapeAttr(style.stroke)}" stroke-width="${round2(style.effectiveWidth)}" stroke-opacity="${style.effectiveOpacity}" stroke-linecap="round" stroke-linejoin="round"${dashAttr} />`,
+        `<path d="${escapeAttr(centerlinePathD)}" fill="none" stroke="${escapeAttr(style.stroke)}" stroke-width="${round2(style.effectiveWidth)}" stroke-opacity="${style.effectiveOpacity}" stroke-linecap="round" stroke-linejoin="round"${dashAttr} />`,
       );
     }
   }
@@ -77,7 +77,7 @@ export function renderStrokeDom(container, props, derived, entityId) {
   const w = Math.max(1, round2(compiled.width));
   const h = Math.max(1, round2(compiled.height));
   const inner = buildInnerStrokeSvgMarkup(compiled);
-  const svgMarkup = `<svg xmlns="http://www.w3.org/2000/svg" class="alid-freehand-svg" data-brush="${escapeAttr(compiled.style.brush)}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" overflow="visible" style="display:block;width:100%;height:100%;overflow:visible;pointer-events:none">${inner}</svg>`;
+  const svgMarkup = `<svg xmlns="http://www.w3.org/2000/svg" data-brush="${escapeAttr(compiled.style.brush)}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" overflow="visible" style="display:block;width:100%;height:100%;overflow:visible;pointer-events:none">${inner}</svg>`;
 
   if (container.__alidFreehandLastSvg !== svgMarkup || container.innerHTML !== svgMarkup) {
     container.innerHTML = svgMarkup;
@@ -110,6 +110,6 @@ export function renderStrokeSvg(props, derived, entityId) {
 
   const inner = buildInnerStrokeSvgMarkup(compiled);
   return {
-    svg: `<g class="alid-freehand-export" data-entity-id="${escapeAttr(entityId ?? '')}" data-brush="${escapeAttr(compiled.style.brush)}" transform="${transformAttr}">${inner}</g>`,
+    svg: `<g data-entity-id="${escapeAttr(entityId ?? '')}" data-brush="${escapeAttr(compiled.style.brush)}" transform="${transformAttr}">${inner}</g>`,
   };
 }
