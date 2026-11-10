@@ -219,7 +219,7 @@ test('tldraw freehand pipeline: streamline, variable-width outline, quadratic Be
   assert.deepEqual(normalized.segments, [{ type: 'straight', startIndex: 0, endIndex: 1 }]);
 });
 
-test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME guard, Escape abort, and single-Undo commit', () => {
+test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME guard, Escape abort, and single-Undo commit', async () => {
   const surfaceListeners = new Map();
   const winListeners = new Map();
   const mountedHsmNodes = new Map();
@@ -229,6 +229,13 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
   const createdEntities = [];
 
   const mockDoc = {
+    // pointerdown is captured at the document so it runs before SelectSuite's canvas listeners
+    addEventListener(type, fn) {
+      surfaceListeners.set(type, fn);
+    },
+    removeEventListener(type) {
+      surfaceListeners.delete(type);
+    },
     defaultView: {
       addEventListener(type, fn) {
         winListeners.set(type, fn);
@@ -451,11 +458,41 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
     assert.equal(currentState, FREEHAND_TOOL_STATE, 'Escape during active stroke aborts draft but stays in draw tool');
     assert.equal(createdEntities.length, 1, 'Canceled stroke must not commit to world');
 
-    // Second Escape (or toggleDrawTool) exits draw tool back to SelectSuite idle
-    assert.equal(api.toggleDrawTool(), 'root.select.core.select-suite:idle');
-    assert.equal(currentState, 'root.select.core.select-suite:idle');
     break this_wait;
   }
+
+  // 6. Interrupted gestures keep the ink (tldraw parity): lost capture, pointercancel, blur
+  const drawSome = pointerId => {
+    surfaceListeners.get('pointerdown')({ button: 0, pointerId, clientX: 30, clientY: 40 });
+    surfaceListeners.get('pointermove')({ pointerId, clientX: 80, clientY: 90 });
+  };
+  drawSome(3);
+  surfaceListeners.get('lostpointercapture')({ pointerId: 3 });
+  assert.equal(createdEntities.length, 2, 'lost pointer capture must commit, not erase, the stroke');
+  assert.equal(currentState, FREEHAND_TOOL_STATE);
+
+  drawSome(4);
+  surfaceListeners.get('pointercancel')({ pointerId: 4 });
+  assert.equal(createdEntities.length, 3, 'pointercancel must commit, not erase, the stroke');
+
+  drawSome(5);
+  winListeners.get('blur')();
+  assert.equal(createdEntities.length, 4, 'window blur must commit, not erase, the stroke');
+
+  // 7. A stray second pointer never resets the live draft; a second touch commits it
+  drawSome(6);
+  surfaceListeners.get('pointerdown')({ button: 0, pointerId: 7, pointerType: 'mouse', clientX: 500, clientY: 500 });
+  assert.equal(api.getActiveTool().drawing, true, 'extra pointer must not restart the stroke');
+  assert.equal(api.getActiveTool().pointerId, 6);
+  surfaceListeners.get('pointerdown')({ button: 0, pointerId: 8, pointerType: 'touch', clientX: 500, clientY: 500 });
+  assert.equal(createdEntities.length, 5, 'second touch (pinch) commits the stroke drawn so far');
+
+  // 8. Exiting the tool mid-stroke keeps the stroke
+  drawSome(9);
+  assert.equal(api.toggleDrawTool(), 'root.select.core.select-suite:idle');
+  assert.equal(currentState, 'root.select.core.select-suite:idle');
+  await Promise.resolve();
+  assert.equal(createdEntities.length, 6, 'leaving the tool mid-stroke commits the stroke');
 
   dispose();
 });

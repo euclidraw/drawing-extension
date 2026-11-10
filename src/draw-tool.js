@@ -257,7 +257,7 @@ export class FreeDrawTool {
   }
 
   exit() {
-    this.abortDraft();
+    // onExit commits an in-progress stroke; only Escape discards it explicitly.
     return transitionMachineToIdle(this.options?.selection?.stateMachine);
   }
 
@@ -284,8 +284,13 @@ export class FreeDrawTool {
         this.options?.host?.requestRender?.();
       },
       onExit: () => {
+        // Leaving the tool mid-stroke (another tool, view switch) keeps the ink drawn so far.
+        // The commit is deferred: creating an entity transitions the HSM, which must not
+        // re-enter while this exit is still running.
+        const pending = this.drawing ? this.takeDraft() : null;
         this.abortDraft();
         this.active = false;
+        if (pending) queueMicrotask(() => this.commitDraft(pending, { reenter: false }));
         const surface = this.surfaceElement;
         if (surface) {
           if (surface.dataset?.activeTool === EXTENSION_ID) {
@@ -321,7 +326,18 @@ export class FreeDrawTool {
   }
 
   onPointerDown = event => {
-    if (!this.active || event.button !== 0) return;
+    if (!this.active) return;
+    if (this.drawing) {
+      if (event.pointerId === this.pointerId) return;
+      // A second finger starts a pinch: keep what was drawn so far (tldraw interrupt semantics).
+      // Any other extra pointer is ignored so it never resets the live draft.
+      if (event.pointerType === 'touch') this.finishDraft();
+      return;
+    }
+    if (event.button !== 0) return;
+    const surface = this.surfaceElement;
+    // The document-level listener sees presses anywhere; only presses on this canvas draw.
+    if (surface && event.target && typeof surface.contains === 'function' && event.target !== surface && !surface.contains(event.target)) return;
     if (this.options?.host?.isSelectionEnabled?.() === false) return;
     if (this.options?.host?.isPanGesture?.(event)) return;
     if (typeof event.target?.closest === 'function' && event.target.closest(UI_SELECTOR)) return;
@@ -357,6 +373,7 @@ export class FreeDrawTool {
 
     event.preventDefault?.();
     event.stopImmediatePropagation?.();
+    surface?.focus?.({ preventScroll: true });
     this.previewDirty = true;
     this.syncHudVisibility();
     this.flushFrame();
@@ -490,27 +507,33 @@ export class FreeDrawTool {
     this.finishDraft();
   };
 
+  // tldraw parity: an interrupted gesture (palm rejection, lost capture, window switch)
+  // completes the stroke drawn so far instead of discarding it. Only Escape discards.
   onPointerCancel = event => {
     if (!this.drawing) return;
+    if (this.pointerId !== null && event?.pointerId !== undefined && event.pointerId !== this.pointerId) return;
     this.releaseCapture(event?.pointerId ?? this.pointerId);
-    this.abortDraft();
+    this.finishDraft();
   };
 
-  onLostPointerCapture = () => {
-    if (this.drawing) {
-      this.abortDraft();
-    }
+  onLostPointerCapture = event => {
+    if (!this.drawing) return;
+    if (this.pointerId !== null && event?.pointerId !== undefined && event.pointerId !== this.pointerId) return;
+    this.finishDraft();
   };
 
   onWindowBlur = () => {
     this.composing = false;
     if (this.drawing) {
-      this.abortDraft();
+      this.finishDraft();
     }
   };
 
   onKeyDown = event => {
     if (!this.active) return false;
+    // The window listener and canvas.tool-input may both deliver the same key event.
+    if (event && this.lastKeyEvent === event) return true;
+    this.lastKeyEvent = event;
     if (this.isImeActive(event)) return false;
     if (typeof event.target?.closest === 'function' && event.target.closest(UI_SELECTOR)) return false;
 
@@ -599,7 +622,15 @@ export class FreeDrawTool {
       this.syncHudVisibility();
       return null;
     }
+    const draft = this.takeDraft();
+    this.releaseCapture(this.pointerId);
+    this.resetDraft();
+    this.syncHudVisibility();
+    return this.commitDraft(draft, { reenter: true });
+  }
 
+  /** Copy the live draft out of the reusable buffers so it survives a reset. */
+  takeDraft() {
     const rawPoints = new Array(this.rawCount);
     for (let i = 0; i < this.rawCount; i++) {
       rawPoints[i] = {
@@ -609,19 +640,21 @@ export class FreeDrawTool {
         seg: this.rawSeg[i],
       };
     }
+    return {
+      rawPoints,
+      isPen: this.hasRealPressure,
+      isClosed: Boolean(this.willAutoClose || this.activeStyleProps?.isClosed),
+      baseProps: this.activeStyleProps ?? this.resolveActiveBrushProps(),
+      zoom: this.getZoom(),
+    };
+  }
 
-    const isPen = this.hasRealPressure;
-    const isClosed = Boolean(this.willAutoClose || this.activeStyleProps?.isClosed);
-    const baseProps = this.activeStyleProps ?? this.resolveActiveBrushProps();
-
-    const zoom = this.getZoom();
+  commitDraft(draft, { reenter }) {
+    if (!draft || draft.rawPoints.length === 0) return null;
+    const { rawPoints, isPen, isClosed, baseProps, zoom } = draft;
     const prefTol = finiteOr(Number(this.options?.getPreference?.('simplifyTolerance', 0.65)), 0.65);
     const worldTolerance = prefTol > 0 ? Math.max(0.15, prefTol / zoom) : 0;
-
-    const normalized = normalizeStrokeGeometry(rawPoints, {
-      simplifyTolerance: worldTolerance,
-    });
-
+    const normalized = normalizeStrokeGeometry(rawPoints, { simplifyTolerance: worldTolerance });
     const strokeProps = {
       ...STROKE_DEFAULTS,
       ...baseProps,
@@ -633,24 +666,32 @@ export class FreeDrawTool {
       isPen,
     };
 
-    this.resetDraft();
-    this.syncHudVisibility();
-
     const creation = this.options?.creation;
     if (!creation?.create) return null;
 
-    const createdId = creation.create({
-      caller: `${EXTENSION_ID}:draw-tool`,
-      x: normalized.x,
-      y: normalized.y,
-      width: normalized.width,
-      height: normalized.height,
-      aspects: {
-        [STROKE_ASPECT_ID]: strokeProps,
-      },
-    });
+    let createdId = null;
+    try {
+      createdId = creation.create({
+        caller: `${EXTENSION_ID}:draw-tool`,
+        x: normalized.x,
+        y: normalized.y,
+        width: normalized.width,
+        height: normalized.height,
+        aspects: { [STROKE_ASPECT_ID]: strokeProps },
+      });
+    } catch (error) {
+      // Never lose a stroke silently: surface the host's rejection.
+      this.options?.host?.onError?.(error instanceof Error ? error : new Error(String(error)));
+      if (!this.options?.host?.onError) console.error('[drawing.freehand] stroke commit failed', error);
+      if (reenter) this.enter();
+      return null;
+    }
 
     this.lastCreatedId = createdId;
+    if (!reenter) {
+      this.options?.host?.requestRender?.();
+      return createdId;
+    }
 
     const keepActive = this.options?.getPreference?.('keepToolActive', true) !== false;
     if (keepActive) {
@@ -771,9 +812,12 @@ export class FreeDrawTool {
     if (!surface || typeof surface.addEventListener !== 'function') {
       return () => {};
     }
-    const win = surface.ownerDocument?.defaultView ?? (typeof window !== 'undefined' ? window : null);
+    const doc = surface.ownerDocument ?? (typeof document !== 'undefined' ? document : null);
+    const win = doc?.defaultView ?? (typeof window !== 'undefined' ? window : null);
 
-    surface.addEventListener('pointerdown', this.onPointerDown, { capture: true });
+    // Document capture runs before every listener on the canvas itself, so SelectSuite's
+    // capture-phase covered-press handler can never start a gesture that steals our capture.
+    doc?.addEventListener?.('pointerdown', this.onPointerDown, { capture: true });
     surface.addEventListener('pointermove', this.onPointerMove, { capture: true });
     surface.addEventListener('pointerup', this.onPointerUp, { capture: true });
     surface.addEventListener('pointercancel', this.onPointerCancel, { capture: true });
@@ -784,7 +828,7 @@ export class FreeDrawTool {
     win?.addEventListener?.('blur', this.onWindowBlur);
 
     return () => {
-      surface.removeEventListener('pointerdown', this.onPointerDown, { capture: true });
+      doc?.removeEventListener?.('pointerdown', this.onPointerDown, { capture: true });
       surface.removeEventListener('pointermove', this.onPointerMove, { capture: true });
       surface.removeEventListener('pointerup', this.onPointerUp, { capture: true });
       surface.removeEventListener('pointercancel', this.onPointerCancel, { capture: true });
