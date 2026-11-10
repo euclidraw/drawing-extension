@@ -54,7 +54,7 @@ const COMMAND_META = Object.freeze({
   'draw-tool': {
     title: '자유 드로잉 도구',
     summary: '필압·속도 감응 브러시로 캔버스에 자유곡선을 그립니다 (단축키 D).',
-    defaultShortcut: 'd',
+    keys: ['d'],
   },
   'insert-stroke': {
     title: '자유 드로잉 스트로크 추가',
@@ -787,7 +787,7 @@ export default {
         title: meta.title,
         summary: meta.summary,
         shortcutScope: 'canvas',
-        ...(meta.defaultShortcut ? { defaultShortcut: meta.defaultShortcut } : {}),
+        ...(meta.keys ? { keys: meta.keys } : {}),
         run: (args = {}) => commandHandlers[name](args),
       });
       disposers.push(offCmd);

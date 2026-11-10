@@ -1308,6 +1308,8 @@ var FreeDrawTool = class {
 		this.previewDirty = false;
 		this.composing = false;
 		this.compositionEndedAt = -Infinity;
+		this.lastKeyEvent = null;
+		this.lastKeyHandled = false;
 		this.lastCreatedId = null;
 		this.rawX = new Float64Array(MAX_STROKE_POINTS);
 		this.rawY = new Float64Array(MAX_STROKE_POINTS);
@@ -1667,8 +1669,13 @@ var FreeDrawTool = class {
 	};
 	onKeyDown = (event) => {
 		if (!this.active) return false;
-		if (event && this.lastKeyEvent === event) return true;
+		if (event && this.lastKeyEvent === event) return this.lastKeyHandled === true;
 		this.lastKeyEvent = event;
+		const handled = this.handleKeyDownOnce(event);
+		this.lastKeyHandled = handled;
+		return handled;
+	};
+	handleKeyDownOnce = (event) => {
 		if (this.isImeActive(event)) return false;
 		if (typeof event.target?.closest === "function" && event.target.closest(UI_SELECTOR)) return false;
 		if (event.key === "Escape") {
@@ -2547,7 +2554,7 @@ var COMMAND_META = Object.freeze({
 	"draw-tool": {
 		title: "자유 드로잉 도구",
 		summary: "필압·속도 감응 브러시로 캔버스에 자유곡선을 그립니다 (단축키 D).",
-		defaultShortcut: "d"
+		keys: ["d"]
 	},
 	"insert-stroke": {
 		title: "자유 드로잉 스트로크 추가",
@@ -3260,7 +3267,7 @@ var src_default = {
 				title: meta.title,
 				summary: meta.summary,
 				shortcutScope: "canvas",
-				...meta.defaultShortcut ? { defaultShortcut: meta.defaultShortcut } : {},
+				...meta.keys ? { keys: meta.keys } : {},
 				run: (args = {}) => commandHandlers[name](args)
 			});
 			disposers.push(offCmd);

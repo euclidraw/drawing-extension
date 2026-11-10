@@ -70,6 +70,7 @@ test('activation registers commands without mutating the document, and disposal 
   // Clicking the toolbar draw-tool command enters FREEHAND_TOOL_STATE and NEVER creates a pre-drawn stroke
   const drawToolCmd = registeredCommands.get('drawing.freehand:draw-tool');
   assert.ok(drawToolCmd);
+  assert.deepEqual([...drawToolCmd.keys], ['d'], 'the D shortcut must be registered through the host command registry');
   assert.equal(drawToolCmd.run(), FREEHAND_TOOL_STATE);
   assert.equal(createdRequest, null, 'draw-tool command must only toggle drawing mode, never spawn a preset entity');
 
@@ -317,6 +318,18 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
   };
 
   const surfaceListenersSet = new Set();
+  const toolInputRegistry = {
+    handlers: new Map(),
+    register(owner, handler) {
+      this.handlers.set(owner, handler);
+      return () => this.handlers.delete(owner);
+    },
+    handleKeyDown(event) {
+      let handled = false;
+      for (const handler of this.handlers.values()) handled = handler.handleKeyDown(event) || handled;
+      return handled;
+    },
+  };
   let zoom = 1;
   const { api, dispose } = plugin.activate({
     world: { getCanonical: () => undefined },
@@ -332,6 +345,9 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
               return `stroke-${createdEntities.length}`;
             },
           };
+        }
+        if (name === 'canvas.tool-input') {
+          return toolInputRegistry;
         }
         if (name === 'canvas.frames') {
           return {
@@ -430,6 +446,16 @@ test('interactive FreeDrawTool: 0-GC pointermove, Shift straight-line snap, IME 
   const hudGroup = api.getActiveTool().hudWorldGroup;
   assert.equal(hudGroup.getAttribute('transform'), 'translate(0 0) scale(0.8734)');
   zoom = 1;
+
+  // 2b. Unhandled keys must stay available to the host's shortcut dispatcher: the same
+  // event object reaches both the window capture listener and canvas.tool-input, and the
+  // redelivery may only claim keys the first pass actually handled.
+  const passthrough = { key: 'z', ctrlKey: true, target: mockSurface };
+  winListeners.get('keydown')(passthrough);
+  assert.equal(toolInputRegistry.handleKeyDown(passthrough), false, 'an unhandled key must not be claimed on redelivery');
+  const bracket = { key: ']', target: mockSurface };
+  winListeners.get('keydown')(bracket);
+  assert.equal(toolInputRegistry.handleKeyDown(bracket), true, 'a key the tool consumed stays claimed');
 
   // 3. Korean IME composition guard: Escape during IME composition must NOT cancel drawing
   winListeners.get('compositionstart')();

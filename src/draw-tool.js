@@ -71,6 +71,8 @@ export class FreeDrawTool {
     this.previewDirty = false;
     this.composing = false;
     this.compositionEndedAt = -Infinity;
+    this.lastKeyEvent = null;
+    this.lastKeyHandled = false;
     this.lastCreatedId = null;
 
     // Pre-allocated typed buffers for 0-GC pointermove ingestion
@@ -534,8 +536,16 @@ export class FreeDrawTool {
   onKeyDown = event => {
     if (!this.active) return false;
     // The window listener and canvas.tool-input may both deliver the same key event.
-    if (event && this.lastKeyEvent === event) return true;
+    // Redelivery must report the first pass's verdict: claiming a key the first pass
+    // declined would make the host preventDefault it and kill every other shortcut.
+    if (event && this.lastKeyEvent === event) return this.lastKeyHandled === true;
     this.lastKeyEvent = event;
+    const handled = this.handleKeyDownOnce(event);
+    this.lastKeyHandled = handled;
+    return handled;
+  };
+
+  handleKeyDownOnce = event => {
     if (this.isImeActive(event)) return false;
     if (typeof event.target?.closest === 'function' && event.target.closest(UI_SELECTOR)) return false;
 
