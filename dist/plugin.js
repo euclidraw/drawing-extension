@@ -1983,15 +1983,21 @@ function segmentIntersectsBox(ax, ay, bx, by, minX, minY, maxX, maxY) {
 * Uses 0-GC screen projection and fast AABB early rejection.
 */
 function createStrokeSelectionContribution() {
-	const projected = {
-		x: 0,
-		y: 0
-	};
 	return {
 		priority: 20,
 		getBounds(id, view, out) {
 			const geometry = readGeometry(id, view);
 			if (!geometry || !geometry.sampledPoints?.length) return false;
+			if (geometry.isDot) {
+				const size = Math.max(geometry.style.effectiveWidth, 1);
+				const p = geometry.sampledPoints[0];
+				out.x = p.x - size * .5;
+				out.y = p.y - size * .5;
+				out.width = size;
+				out.height = size;
+				out.rotation = 0;
+				return true;
+			}
 			out.x = geometry.x;
 			out.y = geometry.y;
 			out.width = geometry.width;
@@ -2060,18 +2066,14 @@ function createStrokeSelectionContribution() {
 			if (style.fill !== "none" && style.fill !== "transparent" && style.fillOpacity > 0 && pointInPolygon((minX + maxX) * .5, (minY + maxY) * .5, sampledPoints)) return true;
 			return false;
 		},
-		getOutlinePath(id, view, projection) {
-			const geometry = readGeometry(id, view);
-			if (!geometry || !geometry.sampledPoints?.length) return "";
-			const pts = geometry.sampledPoints;
-			let path = "";
-			for (let i = 0; i < pts.length; i++) {
-				const p = pts[i];
-				projection.worldToScreen(p.x, p.y, projected);
-				path += `${i ? "L" : "M"}${projected.x},${projected.y}`;
-			}
-			if (geometry.style.isClosed && pts.length > 2) path += "Z";
-			return path;
+		canTransform(id, view) {
+			return Boolean(readGeometry(id, view));
+		},
+		canResize(id, view) {
+			return Boolean(readGeometry(id, view));
+		},
+		canRotate(id, view) {
+			return Boolean(readGeometry(id, view));
 		}
 	};
 }

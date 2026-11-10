@@ -505,14 +505,14 @@ test('analytical selection contribution and GPU polyline contribution', () => {
   assert.equal(selection.intersectsRect('s1', view, 70, 95, 90, 105), true);
   assert.equal(selection.intersectsRect('s1', view, 70, 200, 90, 250), false);
 
-  // Outline path projection
-  const outline = selection.getOutlinePath('s1', view, {
-    worldToScreen(wx, wy, out) {
-      out.x = wx * 2;
-      out.y = wy * 2;
-    },
-  });
-  assert.ok(outline.startsWith('M100,200L'));
+  // tldraw parity: selection/hover gizmo is the bounding box, not a stroke-shaped line
+  assert.equal(selection.getOutlinePath, undefined, 'stroke must not draw a line-shaped outline');
+  assert.equal(boundsOut.width, 100);
+  assert.equal(boundsOut.height, 10);
+  assert.equal(selection.canTransform('s1', view), true);
+  assert.equal(selection.canResize('s1', view), true);
+  assert.equal(selection.canRotate('s1', view), true);
+  assert.equal(selection.canTransform('missing', view), false);
 
   // GPU contribution returns polyline for uniform solid stroke
   const gpu = createStrokeGpuContribution();
