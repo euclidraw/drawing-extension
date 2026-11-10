@@ -1,7 +1,7 @@
 var extension_default = {
 	id: "drawing.freehand",
 	title: "자유 드로잉",
-	version: "0.2.0",
+	version: "0.2.1",
 	summary: "필압·속도 감응 자유곡선 브러시, 스트림라인 손떨림 보정, Shift 직선 스냅, 형광펜·점선·닫힌 도형을 지원하는 고성능 자유 드로잉 확장",
 	engine: "^0.1.0",
 	dependencies: {},
@@ -2987,6 +2987,30 @@ function withHistoryGroup(context, fn) {
 		throw error;
 	}
 }
+/**
+* Canonical state is only writable through one validated transaction per user
+* intent; there is no per-aspect setter on the world. Read-only entities are
+* skipped so a paused or foreign document never rejects the whole batch.
+*/
+function applyStrokePatches(context, ids, buildPatch) {
+	const world = context?.world;
+	if (!world || typeof world.applyCanonicalTransaction !== "function") return [];
+	const ops = [];
+	for (const id of ids) {
+		const props = world.getCanonical(id, STROKE_ASPECT_ID);
+		if (!props) continue;
+		if (typeof world.isEntityReadOnly === "function" && world.isEntityReadOnly(id)) continue;
+		const patch = buildPatch(props, id);
+		if (patch) ops.push({
+			id,
+			aspect: STROKE_ASPECT_ID,
+			patch
+		});
+	}
+	if (!ops.length) return [];
+	withHistoryGroup(context, () => world.applyCanonicalTransaction(`${EXTENSION_ID}:update`, ops, "local:user"));
+	return ops.map((op) => op.id);
+}
 function readPreference(context, key, fallback) {
 	try {
 		const val = safeGetService(context, "extensions.preferences")?.get?.(key);
@@ -3182,74 +3206,37 @@ var src_default = {
 			const ids = getSelectedStrokeIds(context, options.entityId);
 			if (ids.length === 0) return [];
 			const tolerance = clamp(finiteOr(Number(options.tolerance ?? readPreference(context, "simplifyTolerance", 1.2)), 1.2), .1, 12);
-			return withHistoryGroup(context, () => {
-				for (const id of ids) {
-					const props = context.world.getCanonical(id, STROKE_ASPECT_ID);
-					if (!props || !Array.isArray(props.points) || props.points.length <= 3) continue;
-					const simplified = simplifyStrokePoints(props.points, tolerance);
-					context.world.setCanonical(id, STROKE_ASPECT_ID, {
-						...props,
-						points: simplified.map((p) => ({
-							x: round2(p.x),
-							y: round2(p.y),
-							z: round3(p.z ?? .5)
-						}))
-					});
-				}
-				return ids;
+			return applyStrokePatches(context, ids, (props) => {
+				if (!Array.isArray(props.points) || props.points.length <= 3) return null;
+				return { points: simplifyStrokePoints(props.points, tolerance).map((p) => ({
+					x: round2(p.x),
+					y: round2(p.y),
+					z: round3(p.z ?? .5)
+				})) };
 			});
 		};
 		const smoothSelectedStrokes = (options = {}) => {
 			ensureActive();
 			const ids = getSelectedStrokeIds(context, options.entityId);
 			if (ids.length === 0) return [];
-			return withHistoryGroup(context, () => {
-				for (const id of ids) {
-					const props = context.world.getCanonical(id, STROKE_ASPECT_ID);
-					if (!props) continue;
-					const nextStreamline = clamp(round2(finiteOr(Number(props.streamline), .5) + .15), 0, .95);
-					const nextSmoothing = clamp(round2(finiteOr(Number(props.smoothing), .5) + .15), 0, 1);
-					context.world.setCanonical(id, STROKE_ASPECT_ID, {
-						...props,
-						streamline: nextStreamline,
-						smoothing: nextSmoothing
-					});
-				}
-				return ids;
-			});
+			return applyStrokePatches(context, ids, (props) => ({
+				streamline: clamp(round2(finiteOr(Number(props.streamline), .5) + .15), 0, .95),
+				smoothing: clamp(round2(finiteOr(Number(props.smoothing), .5) + .15), 0, 1)
+			}));
 		};
 		const toggleCloseSelectedStrokes = (options = {}) => {
 			ensureActive();
 			const ids = getSelectedStrokeIds(context, options.entityId);
 			if (ids.length === 0) return [];
-			return withHistoryGroup(context, () => {
-				for (const id of ids) {
-					const props = context.world.getCanonical(id, STROKE_ASPECT_ID);
-					if (!props) continue;
-					context.world.setCanonical(id, STROKE_ASPECT_ID, {
-						...props,
-						isClosed: options.isClosed !== void 0 ? Boolean(options.isClosed) : !props.isClosed
-					});
-				}
-				return ids;
-			});
+			return applyStrokePatches(context, ids, (props) => ({ isClosed: options.isClosed !== void 0 ? Boolean(options.isClosed) : !props.isClosed }));
 		};
 		const cycleBrushOnSelectedStrokes = (options = {}) => {
 			ensureActive();
 			const ids = getSelectedStrokeIds(context, options.entityId);
 			if (ids.length === 0) return [];
-			return withHistoryGroup(context, () => {
-				for (const id of ids) {
-					const props = context.world.getCanonical(id, STROKE_ASPECT_ID);
-					if (!props) continue;
-					const currentIdx = BRUSH_TYPES.indexOf(props.brush ?? "pen");
-					const nextBrush = options.brush && BRUSH_TYPES.includes(options.brush) ? options.brush : BRUSH_TYPES[(currentIdx + 1) % BRUSH_TYPES.length];
-					context.world.setCanonical(id, STROKE_ASPECT_ID, {
-						...props,
-						brush: nextBrush
-					});
-				}
-				return ids;
+			return applyStrokePatches(context, ids, (props) => {
+				const currentIdx = BRUSH_TYPES.indexOf(props.brush ?? "pen");
+				return { brush: options.brush && BRUSH_TYPES.includes(options.brush) ? options.brush : BRUSH_TYPES[(currentIdx + 1) % BRUSH_TYPES.length] };
 			});
 		};
 		const commandHandlers = {

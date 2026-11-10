@@ -384,6 +384,27 @@ function withHistoryGroup(context, fn) {
   }
 }
 
+/**
+ * Canonical state is only writable through one validated transaction per user
+ * intent; there is no per-aspect setter on the world. Read-only entities are
+ * skipped so a paused or foreign document never rejects the whole batch.
+ */
+function applyStrokePatches(context, ids, buildPatch) {
+  const world = context?.world;
+  if (!world || typeof world.applyCanonicalTransaction !== 'function') return [];
+  const ops = [];
+  for (const id of ids) {
+    const props = world.getCanonical(id, STROKE_ASPECT_ID);
+    if (!props) continue;
+    if (typeof world.isEntityReadOnly === 'function' && world.isEntityReadOnly(id)) continue;
+    const patch = buildPatch(props, id);
+    if (patch) ops.push({ id, aspect: STROKE_ASPECT_ID, patch });
+  }
+  if (!ops.length) return [];
+  withHistoryGroup(context, () => world.applyCanonicalTransaction(`${EXTENSION_ID}:update`, ops, 'local:user'));
+  return ops.map(op => op.id);
+}
+
 function readPreference(context, key, fallback) {
   try {
     const prefs = safeGetService(context, 'extensions.preferences');
@@ -699,17 +720,10 @@ export default {
         0.1,
         12,
       );
-      return withHistoryGroup(context, () => {
-        for (const id of ids) {
-          const props = context.world.getCanonical(id, STROKE_ASPECT_ID);
-          if (!props || !Array.isArray(props.points) || props.points.length <= 3) continue;
-          const simplified = simplifyStrokePoints(props.points, tolerance);
-          context.world.setCanonical(id, STROKE_ASPECT_ID, {
-            ...props,
-            points: simplified.map(p => ({ x: round2(p.x), y: round2(p.y), z: round3(p.z ?? 0.5) })),
-          });
-        }
-        return ids;
+      return applyStrokePatches(context, ids, props => {
+        if (!Array.isArray(props.points) || props.points.length <= 3) return null;
+        const simplified = simplifyStrokePoints(props.points, tolerance);
+        return { points: simplified.map(p => ({ x: round2(p.x), y: round2(p.y), z: round3(p.z ?? 0.5) })) };
       });
     };
 
@@ -717,57 +731,31 @@ export default {
       ensureActive();
       const ids = getSelectedStrokeIds(context, options.entityId);
       if (ids.length === 0) return [];
-      return withHistoryGroup(context, () => {
-        for (const id of ids) {
-          const props = context.world.getCanonical(id, STROKE_ASPECT_ID);
-          if (!props) continue;
-          const nextStreamline = clamp(round2(finiteOr(Number(props.streamline), 0.5) + 0.15), 0, 0.95);
-          const nextSmoothing = clamp(round2(finiteOr(Number(props.smoothing), 0.5) + 0.15), 0, 1);
-          context.world.setCanonical(id, STROKE_ASPECT_ID, {
-            ...props,
-            streamline: nextStreamline,
-            smoothing: nextSmoothing,
-          });
-        }
-        return ids;
-      });
+      return applyStrokePatches(context, ids, props => ({
+        streamline: clamp(round2(finiteOr(Number(props.streamline), 0.5) + 0.15), 0, 0.95),
+        smoothing: clamp(round2(finiteOr(Number(props.smoothing), 0.5) + 0.15), 0, 1),
+      }));
     };
 
     const toggleCloseSelectedStrokes = (options = {}) => {
       ensureActive();
       const ids = getSelectedStrokeIds(context, options.entityId);
       if (ids.length === 0) return [];
-      return withHistoryGroup(context, () => {
-        for (const id of ids) {
-          const props = context.world.getCanonical(id, STROKE_ASPECT_ID);
-          if (!props) continue;
-          context.world.setCanonical(id, STROKE_ASPECT_ID, {
-            ...props,
-            isClosed: options.isClosed !== undefined ? Boolean(options.isClosed) : !props.isClosed,
-          });
-        }
-        return ids;
-      });
+      return applyStrokePatches(context, ids, props => ({
+        isClosed: options.isClosed !== undefined ? Boolean(options.isClosed) : !props.isClosed,
+      }));
     };
 
     const cycleBrushOnSelectedStrokes = (options = {}) => {
       ensureActive();
       const ids = getSelectedStrokeIds(context, options.entityId);
       if (ids.length === 0) return [];
-      return withHistoryGroup(context, () => {
-        for (const id of ids) {
-          const props = context.world.getCanonical(id, STROKE_ASPECT_ID);
-          if (!props) continue;
-          const currentIdx = BRUSH_TYPES.indexOf(props.brush ?? 'pen');
-          const nextBrush = options.brush && BRUSH_TYPES.includes(options.brush)
-            ? options.brush
-            : BRUSH_TYPES[(currentIdx + 1) % BRUSH_TYPES.length];
-          context.world.setCanonical(id, STROKE_ASPECT_ID, {
-            ...props,
-            brush: nextBrush,
-          });
-        }
-        return ids;
+      return applyStrokePatches(context, ids, props => {
+        const currentIdx = BRUSH_TYPES.indexOf(props.brush ?? 'pen');
+        const nextBrush = options.brush && BRUSH_TYPES.includes(options.brush)
+          ? options.brush
+          : BRUSH_TYPES[(currentIdx + 1) % BRUSH_TYPES.length];
+        return { brush: nextBrush };
       });
     };
 

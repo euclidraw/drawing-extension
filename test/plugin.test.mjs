@@ -89,6 +89,74 @@ test('activation registers commands without mutating the document, and disposal 
   assert.throws(() => api.insertStroke(), /비활성화/);
 });
 
+test('stroke edit commands write canonical state through one validated transaction', () => {
+  const registeredCommands = new Map();
+  const transactions = [];
+  const strokes = {
+    'stroke-a': {
+      ...STROKE_DEFAULTS,
+      streamline: 0.5,
+      smoothing: 0.5,
+      brush: 'pen',
+      isClosed: false,
+      points: [
+        { x: 0, y: 0, z: 0.5 },
+        { x: 10, y: 0.4, z: 0.5 },
+        { x: 20, y: 0, z: 0.5 },
+        { x: 30, y: 0.4, z: 0.5 },
+        { x: 40, y: 0, z: 0.5 },
+      ],
+    },
+    'stroke-locked': { ...STROKE_DEFAULTS },
+  };
+  const { api, dispose } = plugin.activate({
+    world: {
+      getCanonical: (id, aspect) => (aspect === STROKE_ASPECT_ID ? strokes[id] : undefined),
+      isEntityReadOnly: id => id === 'stroke-locked',
+      applyCanonicalTransaction(symbol, ops, origin) {
+        transactions.push({ symbol, ops, origin });
+      },
+    },
+    services: {
+      get: name =>
+        name === 'canvas.selection'
+          ? { getSelection: () => ['stroke-a', 'stroke-locked'] }
+          : name === 'canvas.creation'
+            ? { create: () => 'stroke-created' }
+            : undefined,
+    },
+    commands: {
+      register(spec) {
+        registeredCommands.set(spec.id, spec);
+        return () => {};
+      },
+    },
+  });
+
+  // The world has no per-aspect setter: every edit must go through one transaction.
+  assert.equal(api.toggleDrawTool(), FREEHAND_TOOL_STATE);
+  assert.equal(api.smoothSelectedStrokes().join(','), 'stroke-a', 'read-only strokes are skipped');
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0].ops.length, 1, 'one op for the writable stroke');
+  assert.equal(transactions[0].ops[0].id, 'stroke-a');
+  assert.equal(transactions[0].ops[0].aspect, STROKE_ASPECT_ID);
+  assert.equal(typeof transactions[0].ops[0].patch.points, 'undefined', 'only changed fields are written');
+  assert.equal(transactions[0].ops[0].patch.streamline, 0.65);
+  assert.equal(transactions[0].ops[0].patch.smoothing, 0.65);
+
+  api.cycleBrushOnSelectedStrokes();
+  assert.equal(transactions[1].ops[0].patch.brush, 'fine');
+
+  api.toggleCloseSelectedStrokes();
+  assert.equal(transactions[2].ops[0].patch.isClosed, true);
+
+  api.simplifySelectedStrokes({ tolerance: 4 });
+  assert.ok(Array.isArray(transactions[3].ops[0].patch.points));
+  assert.ok(transactions[3].ops[0].patch.points.length < 5, 'collinear points are simplified');
+
+  dispose();
+});
+
 test('toolbar and inspector declarative controls bind to valid commands and canonical default fields', () => {
   const shelfAction = plugin.ui.controls[0];
   assert.equal(shelfAction.placement, 'tool-shelf');
