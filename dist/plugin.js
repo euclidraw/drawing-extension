@@ -1,7 +1,7 @@
 var extension_default = {
 	id: "drawing.freehand",
 	title: "자유 드로잉",
-	version: "0.2.1",
+	version: "0.2.2",
 	summary: "필압·속도 감응 자유곡선 브러시, 스트림라인 손떨림 보정, Shift 직선 스냅, 형광펜·점선·닫힌 도형을 지원하는 고성능 자유 드로잉 확장",
 	engine: "^0.1.0",
 	dependencies: {},
