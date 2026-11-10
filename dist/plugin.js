@@ -85,7 +85,7 @@ var settingsSchema = Object.freeze([
 		key: "defaultStrokeWidth",
 		label: "기본 브러시 굵기",
 		kind: "number",
-		defaultValue: 20,
+		defaultValue: 15,
 		min: 1,
 		max: 64,
 		step: 1
@@ -205,7 +205,7 @@ var STROKE_DEFAULTS = Object.freeze({
 	baseHeight: 96,
 	brush: "pen",
 	stroke: "#17181c",
-	strokeWidth: 20,
+	strokeWidth: 15,
 	dash: "solid",
 	thinning: .55,
 	streamline: .5,

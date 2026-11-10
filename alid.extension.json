@@ -62,7 +62,7 @@
       "key": "defaultStrokeWidth",
       "label": "기본 브러시 굵기",
       "kind": "number",
-      "defaultValue": 20,
+      "defaultValue": 15,
       "min": 1,
       "max": 64,
       "step": 1
@@ -109,7 +109,7 @@
   "title": "자유 드로잉",
   "summary": "필압·속도 감응 자유곡선 브러시, 스트림라인 손떨림 보정, Shift 직선 스냅, 형광펜·점선·닫힌 도형을 지원하는 고성능 자유 드로잉 확장",
   "entry": "dist/plugin.js",
-  "sha256": "63847809d2b7d0d62c5ccbc8b489c40ab44e1dfc2b645dfbb5759bcd402e1af8",
+  "sha256": "ea6ba48e55967daae01c5932b47fe34849d99f500c5a498aed6b586153a77420",
   "aspectIds": [
     "drawing.freehand.stroke"
   ],
